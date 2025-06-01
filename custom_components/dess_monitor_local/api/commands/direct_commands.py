@@ -1,3 +1,5 @@
+import asyncio
+import serial_asyncio_fast as serial_asyncio
 from enum import Enum
 
 
@@ -186,19 +188,18 @@ def decode_qbeqi(ascii_str):
     values = ascii_str.split()
     fields = [
         "equalization_function",
-        "equalization_time",  # (min)
+        "equalization_time",
         "interval_days",
         "max_charging_current",
         "float_voltage",
         "reserved_1",
-        "equalization_timeout",  # (min)
+        "equalization_timeout",
         "immediate_activation_flag",
-        "elapsed_time"  # (min)
+        "elapsed_time"
     ]
     return dict(zip(fields, values))
 
 
-# Тестовый универсальный декодер
 def decode_direct_response(command: str, hex_input: str) -> dict:
     if hex_input == 'null':
         return {"error": "null response received. Command not accepted."}
@@ -231,19 +232,19 @@ def decode_direct_response(command: str, hex_input: str) -> dict:
 
 
 direct_commands = {
-    "QPIGS": "51 50 49 47 53 B7 A9 0D",
-    "QPIGS2": "51 50 49 47 53 32 2B 8A 0D",
-    "QPIRI": "51 50 49 52 49 F8 54 0D",
-    "QMOD": "51 4D 4F 44 49 C1 0D",
-    "QPIWS": "51 50 49 57 53 B4 DA 0D",
-    "QVFW": "51 56 46 57 62 99 0D",
+    "QPIGS":   "51 50 49 47 53 B7 A9 0D",
+    "QPIGS2":  "51 50 49 47 53 32 2B 8A 0D",
+    "QPIRI":   "51 50 49 52 49 F8 54 0D",
+    "QMOD":    "51 4D 4F 44 49 C1 0D",
+    "QPIWS":   "51 50 49 57 53 B4 DA 0D",
+    "QVFW":    "51 56 46 57 62 99 0D",
     "QMCHGCR": "51 4D 43 48 47 43 52 D8 55 0D",
-    "QMUCHGCR": "51 4D 55 43 48 47 43 52 26 34 0D",
-    "QFLAG": "51 46 4C 41 47 98 74 0D",
-    "QSID": "51 53 49 44 BB 05 0D",
-    "QID": "51 49 44 D6 EA 0D",
-    "QMN": "51 4D 4E BB 64 0D",
-    "QBEQI": "51 42 45 51 49 31 6B 0D",  # CRC может отличаться в зависимости от устройства
+    "QMUCHGCR":"51 4D 55 43 48 47 43 52 26 34 0D",
+    "QFLAG":   "51 46 4C 41 47 98 74 0D",
+    "QSID":    "51 53 49 44 BB 05 0D",
+    "QID":     "51 49 44 D6 EA 0D",
+    "QMN":     "51 4D 4E BB 64 0D",
+    "QBEQI":   "51 42 45 51 49 31 6B 0D",
 }
 
 
@@ -251,7 +252,6 @@ def get_command_hex(command_name: str) -> str:
     return direct_commands.get(command_name.upper(), "Unknown command")
 
 
-# Функция поиска команды по HEX
 def get_command_name_by_hex(hex_string: str) -> str:
     normalized_input = hex_string.strip().upper().replace("  ", " ")
     for name, hex_cmd in direct_commands.items():
@@ -259,9 +259,76 @@ def get_command_name_by_hex(hex_string: str) -> str:
             return name
     return "Unknown HEX command"
 
-# # Пример вызова:
-# hex_data = "28 32 33 31 2E 38 20 35 30 2E 30 20 32 33 31 2E 38 20 35 30 2E 30 20 30 31 31 35 20 30 30 31 36 20 30 30 32 20 34 30 38 20 32 37 2E 30 30 20 30 31 32 20 30 39 35 20 30 30 33 30 20 30 30 30 30 20 30 30 30 2E 30 20 30 30 2E 30 30 20 30 30 30 30 30 20 30 30 30 31 30 31 30 31 20 30 30 20 30 30 20 30 30 30 30 31 20 30 31 30 9E CA 0D"
-# decoded = decode_direct_response('QPIGS2', hex_data)
-#
-# for key, value in decoded.items():
-#     print(f"{key:35} : {value}")
+
+class SerialCommandProtocol(asyncio.Protocol):
+    def __init__(self, command: str, on_response):
+        self.transport = None
+        self.command = command.upper()            # e.g. "QPIGS"
+        self.command_bytes = command.encode('ascii')
+        self.on_response = on_response
+        self.buffer = bytearray()
+
+    def connection_made(self, transport):
+        self.transport = transport
+        # Отправляем ASCII-команду с terminator '\r\n'
+        packet = self.command_bytes + b'\r\n'
+        self.transport.write(packet)
+
+    def data_received(self, data):
+        self.buffer.extend(data)
+        # Ждём появления '\r' (окончание ответа)
+        if b'\r' in self.buffer:
+            idx = self.buffer.index(b'\r')
+            response_bytes = self.buffer[:idx]  # всё до '\r'
+
+            # Преобразуем байты в HEX-строку вида "32 33 30 2E 30 20 ..."
+            hex_input = " ".join(f"{b:02X}" for b in response_bytes)
+
+            # Декодируем напрямую в структуру
+            try:
+                decoded_struct = decode_direct_response(self.command, hex_input)
+                self.on_response(decoded_struct, None)
+            except Exception as e:
+                self.on_response(None, e)
+
+            self.transport.close()
+
+    def connection_lost(self, exc):
+        if exc:
+            self.on_response(None, exc)
+
+
+async def get_direct_data(device: str, command_str: str) -> dict:
+    """
+    Отправляет команду (напр. "QPIGS") на указанный последовательный порт,
+    ждёт ответа до символа '\r', затем возвращает структуру
+    (словарь) с полями от decode_direct_response.
+    """
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+
+    def on_response(data, err):
+        if err:
+            if not fut.done():
+                fut.set_exception(err)
+        else:
+            if not fut.done():
+                fut.set_result(data)
+
+    # command_str передаём как строку, e.g. "QPIGS"
+    transport, protocol = await serial_asyncio.create_serial_connection(
+        loop,
+        lambda: SerialCommandProtocol(command_str, on_response),
+        device,
+        baudrate=2400,
+        bytesize=8,
+        parity='N',
+        stopbits=1,
+        timeout=1,
+    )
+
+    try:
+        result = await asyncio.wait_for(fut, timeout=5)
+    finally:
+        transport.close()
+    return result

@@ -8,7 +8,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from custom_components.dess_monitor_local.api.commands.serial_comm import get_direct_data
+from custom_components.dess_monitor_local.api.commands.direct_commands import get_direct_data
 
 _LOGGER = logging.getLogger(__name__)
 
