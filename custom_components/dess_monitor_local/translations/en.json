@@ -1,0 +1,41 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_auth": "Invalid login or password",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "password": "Password",
+          "username": "Login",
+          "dynamic_settings": "Device settings (allow to read & set equipment settings)",
+          "raw_sensors": "Device raw sensors (provide all available by wifi plug sensor fields)",
+          "direct_request_protocol": "Direct data request protocol beta (provide near-realtime direct data reading from equipment, excluding non Axpert devices like Anenji etc.)"
+        }
+      },
+      "select_devices": {
+        "data": {
+          "devices": "Select required devices"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Update hub parameters",
+        "data": {
+          "devices": "Available devices",
+          "dynamic_settings": "Device settings (allow to read & set equipment settings)",
+          "raw_sensors": "Device raw sensors (provide all available by wifi plug sensor fields)",
+          "direct_request_protocol": "Direct data request protocol beta (provide near-realtime direct data reading from equipment, excluding non Axpert devices like Anenji etc.)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "domain": "dess_monitor_local",
+  "name": "DESS Monitor Local",
+  "codeowners": [
+    "@Antoxa1081"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Antoxa1081/home-assistant-dess-monitor/blob/main/README.md",
+  "homekit": {},
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/Antoxa1081/home-assistant-dess-monitor/issues",
+  "requirements": ["pyserial-asyncio-fast==0.16"],
+  "ssdp": [],
+  "version": "0.3.4",
+  "zeroconf": []
+}
