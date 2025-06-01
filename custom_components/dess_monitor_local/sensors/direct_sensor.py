@@ -26,13 +26,15 @@ class DirectSensorBase(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, self._inverter_device.inverter_id)},
             "name": self._inverter_device.name,
             "sw_version": self._inverter_device.firmware_version,
+            "model": self._inverter_device.inverter_id,
             "manufacturer": 'ESS'
         }
 
     @property
     def available(self) -> bool:
         """Return True if inverter_device and hub is available."""
-        return self._inverter_device.online and self._inverter_device.hub.online
+        return True
+        # return self._inverter_device.online and self._inverter_device.hub.online
 
     @property
     def data(self):
@@ -65,7 +67,6 @@ class DirectTypedSensorBase(DirectSensorBase):
     def _handle_coordinator_update(self) -> None:
         section = self.data.get(self.data_section, {})
         raw_value = section.get(self.data_key)
-
         if raw_value is not None:
             try:
                 self._attr_native_value = float(raw_value)
@@ -73,7 +74,6 @@ class DirectTypedSensorBase(DirectSensorBase):
                 self._attr_native_value = None
         else:
             self._attr_native_value = None
-
         self.async_write_ha_state()
 
 

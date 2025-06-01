@@ -54,10 +54,7 @@ class DirectCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         try:
-            # Note: asyncio.TimeoutError and aiohttp.ClientError are already
-            # handled by the data update coordinator.
             async with async_timeout.timeout(30):
-
                 async def fetch_device_data(device):
                     qpigs = await get_direct_data(device, 'QPIGS')
                     qpigs2 = await get_direct_data(device, 'QPIGS2')
@@ -68,6 +65,7 @@ class DirectCoordinator(DataUpdateCoordinator):
                         'qpiri': qpiri
                     }
                     # return device, {
+                    #     "timestamp": datetime.now(),
                     #     "qpigs": {
                     #         "grid_voltage": "239.7",
                     #         "grid_frequency": "50.0",
@@ -124,8 +122,8 @@ class DirectCoordinator(DataUpdateCoordinator):
                     # }
 
                 data_map = dict(await asyncio.gather(*map(fetch_device_data, self.devices)))
+                # print('devices', self.devices, data_map)
                 return data_map
-                # return
         except TimeoutError as err:
             # Raising ConfigEntryAuthFailed will cancel future updates
             # and start a config flow with SOURCE_REAUTH (async_step_reauth)

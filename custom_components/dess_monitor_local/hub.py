@@ -8,7 +8,7 @@ from custom_components.dess_monitor_local.coordinators.direct_coordinator import
 class Hub:
     manufacturer = "DESS Monitor Local"
 
-    def __init__(self, hass: HomeAssistant, username: str, direct_coordinator1: DirectCoordinator = None) -> None:
+    def __init__(self, hass: HomeAssistant, username: str, direct_coordinator1: DirectCoordinator) -> None:
         self.auth = None
         self._username = username
         self._hass = hass
@@ -26,10 +26,8 @@ class Hub:
     async def init(self):
         devices = self.direct_coordinator.devices
         for device in devices:
-            # print(device)
             inverter_device = InverterDevice(f"{device}", f"{self._username}", device, self)
             self.items.append(inverter_device)
-
 
 class InverterDevice:
 
@@ -47,6 +45,6 @@ class InverterDevice:
 
     @property
     def online(self) -> float:
-        if self.hub.direct_coordinator.data is not None and self.inverter_id not in self.hub.direct_coordinator.data:
-            return False
+        # if self.hub.direct_coordinator.data is not None and self.inverter_id not in self.hub.direct_coordinator.data:
+        #     return False
         return True

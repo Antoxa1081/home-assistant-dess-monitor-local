@@ -1,6 +1,7 @@
 import asyncio
-import serial_asyncio_fast as serial_asyncio
 from enum import Enum
+
+import serial_asyncio_fast as serial_asyncio
 
 
 def decode_ascii_response(hex_string):
@@ -263,7 +264,7 @@ def get_command_name_by_hex(hex_string: str) -> str:
 class SerialCommandProtocol(asyncio.Protocol):
     def __init__(self, command: str, on_response):
         self.transport = None
-        self.command = command.upper()            # e.g. "QPIGS"
+        self.command = command.upper()  # e.g. "QPIGS"
         self.command_bytes = command.encode('ascii')
         self.on_response = on_response
         self.buffer = bytearray()
