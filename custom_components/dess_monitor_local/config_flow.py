@@ -21,6 +21,12 @@ async def validate_input(hass: HomeAssistant, data: dict) -> dict[str, Any]:
     return {"title": data["name"]}
 
 
+async def list_serial_ports() -> list[str]:
+    # return ['/dev/ttyUSB0']
+    ports = await asyncio.to_thread(serial.tools.list_ports.comports)
+    return [port.device for port in ports]
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     # Pick one of the available connection classes in homeassistant/config_entries.py
@@ -62,7 +68,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # This example does not currently cover translations, see the
                 # comments on `DATA_SCHEMA` for further details.
                 # Set the error on the `host` field, not the entire form.
-                errors["username"] = "invalid_auth"
+                errors["name"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
@@ -72,12 +78,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
         )
 
-    async def list_serial_ports(self) -> list[str]:
-        ports = await asyncio.to_thread(serial.tools.list_ports.comports)
-        return [port.device for port in ports]
-
     async def async_step_select_devices(self, user_input=None):
-        device_ports = await self.list_serial_ports()
+        device_ports = await list_serial_ports()
 
         if user_input is not None:
             device = user_input.get("device")

@@ -67,6 +67,61 @@ class DirectCoordinator(DataUpdateCoordinator):
                         'qpigs2': qpigs2,
                         'qpiri': qpiri
                     }
+                    # return device, {
+                    #     "qpigs": {
+                    #         "grid_voltage": "239.7",
+                    #         "grid_frequency": "50.0",
+                    #         "ac_output_voltage": "230.2",
+                    #         "ac_output_frequency": "50.0",
+                    #         "output_apparent_power": "0095",
+                    #         "output_active_power": "0095",
+                    #         "load_percent": "002",
+                    #         "bus_voltage": "399",
+                    #         "battery_voltage": "26.50",
+                    #         "battery_charging_current": "000",
+                    #         "battery_capacity": "068",
+                    #         "inverter_heat_sink_temperature": "0040",
+                    #         "pv_input_current": "0000",
+                    #         "pv_input_voltage": "000.0",
+                    #         "scc_battery_voltage": "00.00",
+                    #         "battery_discharge_current": "00003",
+                    #         "device_status_bits_b7_b0": "00010000",
+                    #         "battery_voltage_offset": "00",
+                    #         "eeprom_version": "00",
+                    #         "pv_charging_power": "00001",
+                    #         "device_status_bits_b10_b8": "010"
+                    #     },
+                    #     "qpigs2": {
+                    #         "error": "NAK response received. Command not accepted."
+                    #     },
+                    #     "qpiri": {
+                    #         "rated_grid_voltage": "230.0",
+                    #         "rated_input_current": "15.2",
+                    #         "rated_ac_output_voltage": "230.0",
+                    #         "rated_output_frequency": "50.0",
+                    #         "rated_output_current": "15.2",
+                    #         "rated_output_apparent_power": "3500",
+                    #         "rated_output_active_power": "3500",
+                    #         "rated_battery_voltage": "24.0",
+                    #         "low_battery_to_ac_bypass_voltage": "24.0",
+                    #         "shut_down_battery_voltage": "23.0",
+                    #         "bulk_charging_voltage": "29.2",
+                    #         "float_charging_voltage": "27.2",
+                    #         "battery_type": "UserDefined",
+                    #         "max_utility_charging_current": "30",
+                    #         "max_charging_current": "050",
+                    #         "ac_input_voltage_range": "UPS",
+                    #         "output_source_priority": "SBU",
+                    #         "charger_source_priority": "SolarFirst",
+                    #         "parallel_max_number": "6",
+                    #         "reserved_uu": "01",
+                    #         "reserved_v": "0",
+                    #         "parallel_mode": "Master",
+                    #         "high_battery_voltage_to_battery_mode": "26.0",
+                    #         "solar_work_condition_in_parallel": "0",
+                    #         "solar_max_charging_power_auto_adjust": "1_"
+                    #     }
+                    # }
 
                 data_map = dict(await asyncio.gather(*map(fetch_device_data, self.devices)))
                 return data_map

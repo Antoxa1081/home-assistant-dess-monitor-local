@@ -25,7 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
         direct_coordinator_ctx.async_config_entry_first_refresh()
     )
 
-    entry.runtime_data = hub.Hub(hass, entry.data["username"], direct_coordinator_ctx)
+    entry.runtime_data = hub.Hub(hass, entry.data["name"], direct_coordinator_ctx)
     await entry.runtime_data.init()
     # This creates each HA object for each platform your device requires.
     # It's done by calling the `async_setup_entry` function in each platform module.
