@@ -230,7 +230,6 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
 class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_suggested_display_precision = 1
 
     def __init__(self, inverter_device, coordinator, hass):
@@ -239,17 +238,17 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             coordinator=coordinator,
             data_section="qpigs",
             data_key="battery_voltage",
-            sensor_suffix="direct_battery_state_of_charge",
-            name_suffix="Direct Battery State of Charge",
+            sensor_suffix="battery_state_of_charge",
+            name_suffix="Battery State of Charge",
         )
-        self._accumulated_energy_wh = 0.0
+        self._accumulated_energy_wh = 100.0
         self._prev_power = None
         self._prev_ts = datetime.now()
         self._restored = False
         self._hass = hass
 
         device_slug = slugify(self._inverter_device.name)
-        self._capacity_entity_id = f"number.{device_slug}_battery_capacity_wh"
+        self._capacity_entity_id = f"number.{device_slug}_vsoc_battery_capacity"
         self._battery_capacity_wh = None
 
         async_track_state_change_event(
@@ -275,7 +274,9 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
     def available(self) -> bool:
         # Доступен только если восстановлен и емкость задана положительно
         bulk_voltage = self.get_bulk_charging_voltage()
-        return super().available and self._restored and (self._battery_capacity_wh is not None and self._battery_capacity_wh > 0) and (bulk_voltage is not None)
+        return super().available and self._restored and (
+                    self._battery_capacity_wh is not None and self._battery_capacity_wh > 0) and (
+                    bulk_voltage is not None)
 
     @callback
     def _handle_battery_capacity_change(self, event):
@@ -310,6 +311,16 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             pass
         return None
 
+    def get_floating_charging_voltage(self) -> float | None:
+        try:
+            qpiri = self.data.get("qpiri", {})
+            voltage = float(qpiri.get("float_charging_voltage"))
+            if voltage > 0:
+                return voltage
+        except (KeyError, ValueError, TypeError):
+            pass
+        return None
+
     def update_soc(self, current_power: float, current_voltage: float):
         if self._battery_capacity_wh is None or self._battery_capacity_wh <= 0:
             # Не считаем, если емкость не задана
@@ -318,6 +329,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             return
 
         bulk_voltage = self.get_bulk_charging_voltage()
+        floating_voltage = self.get_floating_charging_voltage()
         if bulk_voltage is None:
             self._attr_native_value = None
             self.async_write_ha_state()
@@ -335,7 +347,8 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
 
         max_capacity = self._battery_capacity_wh
 
-        if current_voltage >= bulk_voltage:
+        if current_voltage >= bulk_voltage or (
+                current_voltage >= floating_voltage and 0 < current_power <= 2 * bulk_voltage):
             soc_percent = 100.0
             self._accumulated_energy_wh = max_capacity
         else:
