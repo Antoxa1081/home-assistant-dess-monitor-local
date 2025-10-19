@@ -8,6 +8,7 @@ from . import HubConfigEntry
 from .sensors.direct_energy_sensors import DirectInverterOutputEnergySensor, DirectPV2EnergySensor, \
     DirectPVEnergySensor, DirectBatteryInEnergySensor, DirectBatteryOutEnergySensor, DirectBatteryStateOfChargeSensor
 
+
 async def async_setup_entry(
         hass: HomeAssistant,
         config_entry: HubConfigEntry,
@@ -31,7 +32,6 @@ async def async_setup_entry(
 
     if new_devices:
         async_add_entities(new_devices)
-
 
 
 def create_direct_sensors(item, coordinator):

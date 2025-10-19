@@ -254,19 +254,19 @@ def decode_direct_response(command: str, input_str: str) -> dict:
 
 
 direct_commands = {
-    "QPIGS":   "51 50 49 47 53 B7 A9 0D",
-    "QPIGS2":  "51 50 49 47 53 32 2B 8A 0D",
-    "QPIRI":   "51 50 49 52 49 F8 54 0D",
-    "QMOD":    "51 4D 4F 44 49 C1 0D",
-    "QPIWS":   "51 50 49 57 53 B4 DA 0D",
-    "QVFW":    "51 56 46 57 62 99 0D",
+    "QPIGS": "51 50 49 47 53 B7 A9 0D",
+    "QPIGS2": "51 50 49 47 53 32 2B 8A 0D",
+    "QPIRI": "51 50 49 52 49 F8 54 0D",
+    "QMOD": "51 4D 4F 44 49 C1 0D",
+    "QPIWS": "51 50 49 57 53 B4 DA 0D",
+    "QVFW": "51 56 46 57 62 99 0D",
     "QMCHGCR": "51 4D 43 48 47 43 52 D8 55 0D",
-    "QMUCHGCR":"51 4D 55 43 48 47 43 52 26 34 0D",
-    "QFLAG":   "51 46 4C 41 47 98 74 0D",
-    "QSID":    "51 53 49 44 BB 05 0D",
-    "QID":     "51 49 44 D6 EA 0D",
-    "QMN":     "51 4D 4E BB 64 0D",
-    "QBEQI":   "51 42 45 51 49 31 6B 0D",
+    "QMUCHGCR": "51 4D 55 43 48 47 43 52 26 34 0D",
+    "QFLAG": "51 46 4C 41 47 98 74 0D",
+    "QSID": "51 53 49 44 BB 05 0D",
+    "QID": "51 49 44 D6 EA 0D",
+    "QMN": "51 4D 4E BB 64 0D",
+    "QBEQI": "51 42 45 51 49 31 6B 0D",
 }
 
 

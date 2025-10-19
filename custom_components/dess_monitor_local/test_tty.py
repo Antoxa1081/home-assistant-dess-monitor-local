@@ -1,5 +1,7 @@
-import serial
 import time
+
+import serial
+
 
 def decode_qpigs(ascii_str: str) -> dict:
     """Parse QPIGS ASCII response string into a dictionary with meaningful keys."""
@@ -41,27 +43,28 @@ def decode_qpigs(ascii_str: str) -> dict:
     parsed_values = list(map(parse_value, values))
     return dict(zip(fields, parsed_values))
 
+
 def main():
-    port = '/dev/ttyUSB0'   # your USB→RS232 adapter
+    port = '/dev/ttyUSB0'  # your USB→RS232 adapter
     baudrate = 2400
     timeout = 1
 
     with serial.Serial(
-        port=port,
-        baudrate=baudrate,
-        bytesize=serial.EIGHTBITS,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-        timeout=timeout
+            port=port,
+            baudrate=baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=timeout
     ) as ser:
-        time.sleep(0.2)                 # Give the inverter a moment to wake
-        ser.reset_input_buffer()        # Flush out any stray CRs before we send
+        time.sleep(0.2)  # Give the inverter a moment to wake
+        ser.reset_input_buffer()  # Flush out any stray CRs before we send
 
-        packet = b'QPIGS' + b'\r\n'     # Try CR+LF terminator
+        packet = b'QPIGS' + b'\r\n'  # Try CR+LF terminator
         ser.write(packet)
 
         time.sleep(0.3)
-        response = ser.read(200)        # Read up to 200 bytes just in case
+        response = ser.read(200)  # Read up to 200 bytes just in case
 
         if not response:
             print("No response from inverter (timeout or wiring issue).")
@@ -85,6 +88,7 @@ def main():
 
         for key, val in decoded_data.items():
             print(f"{key}: {val}")
+
 
 if __name__ == '__main__':
     main()

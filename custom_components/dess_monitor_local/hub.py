@@ -29,6 +29,7 @@ class Hub:
             inverter_device = InverterDevice(f"{device}", f"{self._username}", device, self)
             self.items.append(inverter_device)
 
+
 class InverterDevice:
 
     def __init__(self, inverter_pn: str, name: str, device_data, hub: Hub) -> None:
