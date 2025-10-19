@@ -7,7 +7,7 @@ import voluptuous as vol
 from homeassistant import config_entries, exceptions
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.selector import selector
-
+import homeassistant.helpers.config_validation as cv
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,29 +79,52 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_select_devices(self, user_input=None):
-        device_ports = await list_serial_ports()
+        """Шаг выбора способа подключения: serial или TCP (ELFIN)."""
+
+        device_ports = await list_serial_ports()  # вернёт список вроде ['/dev/ttyUSB0', 'COM3']
+
+        errors = {}
 
         if user_input is not None:
             device = user_input.get("device")
-            if device is not None:
+            host = user_input.get("host")
+            port = user_input.get("port", 8899)
+
+            # Проверка корректности выбора
+            if not device and not host:
+                errors["base"] = "select_or_enter"  # пользователь ничего не выбрал
+            else:
+                # Сформировать итоговый адрес
+                device_value = f"tcp://{host}:{port}" if host else device
+
                 return self.async_create_entry(
-                    title=self._info["title"],
+                    title=self._info.get("title", "Inverter"),
                     data={
-                        'name': self._name,
-                        'device': device,
-                    }
+                        "name": self._name,
+                        "device": device_value,
+                    },
                 )
 
+        # Формируем форму
         return self.async_show_form(
             step_id="select_devices",
             data_schema=vol.Schema({
-                vol.Required("device"): selector({
+                vol.Optional("device"): selector({
                     "select": {
-                        "options": [{"value": d, "label": d} for d in device_ports],
+                        "options": [
+                            {"value": d, "label": d}
+                            for d in device_ports
+                        ],
                         "multiple": False,
                     }
-                })
+                }),
+                vol.Optional("host"): cv.string,
+                vol.Optional("port", default=8899): cv.port,
             }),
+            errors=errors,
+            description_placeholders={
+                "tip": "Выберите локальный порт или введите IP вашего Elfin EW10A"
+            }
         )
 
     # @staticmethod

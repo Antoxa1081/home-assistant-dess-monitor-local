@@ -1,4 +1,6 @@
 import asyncio
+import re
+import struct
 from enum import Enum
 
 import serial_asyncio_fast as serial_asyncio
@@ -201,10 +203,29 @@ def decode_qbeqi(ascii_str):
     return dict(zip(fields, values))
 
 
-def decode_direct_response(command: str, hex_input: str) -> dict:
-    if hex_input == 'null':
+def is_hex_string(s: str) -> bool:
+    """Проверяет, состоит ли строка только из hex-символов или байтов в формате 'AA BB CC'."""
+    s = s.strip().replace(" ", "")
+    return bool(re.fullmatch(r"[0-9A-Fa-f]+", s)) and len(s) % 2 == 0
+
+
+
+def decode_direct_response(command: str, input_str: str) -> dict:
+    """Определяет тип входных данных (hex или ascii) и выполняет расшифровку."""
+    if not input_str:
+        return {"error": "empty response"}
+
+    if input_str == "null":
         return {"error": "null response received. Command not accepted."}
-    ascii_str = decode_ascii_response(hex_input)
+
+    # 🔹 если это hex — сначала декодируем в ASCII
+    if is_hex_string(input_str):
+        ascii_str = decode_ascii_response(input_str)
+    else:
+        ascii_str = input_str.strip()
+
+    # 🔹 очистим лишние символы скобок и CR/LF
+    ascii_str = ascii_str.strip().replace("(", "").replace(")", "").replace("\r", "").replace("\n", "")
 
     if ascii_str.startswith("NAK") or "NAK" in ascii_str:
         return {"error": "NAK response received. Command not accepted."}
@@ -261,75 +282,239 @@ def get_command_name_by_hex(hex_string: str) -> str:
     return "Unknown HEX command"
 
 
-class SerialCommandProtocol(asyncio.Protocol):
+
+def crc16(data: bytes) -> bytes:
+    """CRC16, как в протоколе Voltronic (QPIGS/QPI/QMOD)."""
+    crc = 0
+    for b in data:
+        x = (crc >> 8) ^ b
+        x ^= x >> 4
+        crc = ((crc << 8) ^ (x << 12) ^ (x << 5) ^ x) & 0xFFFF
+    return struct.pack(">H", crc)
+
+
+class ElfinTCPProtocol(asyncio.Protocol):
     def __init__(self, command: str, on_response):
         self.transport = None
-        self.command = command.upper()  # e.g. "QPIGS"
-        self.command_bytes = command.encode('ascii')
+        self.command = command.upper()
+        self.command_bytes = command.encode("ascii")
         self.on_response = on_response
         self.buffer = bytearray()
 
     def connection_made(self, transport):
         self.transport = transport
-        # Отправляем ASCII-команду с terminator '\r\n'
-        packet = self.command_bytes + b'\r\n'
+        packet = self.command_bytes + crc16(self.command_bytes) + b'\r'
         self.transport.write(packet)
 
-    def data_received(self, data):
+    def data_received(self, data: bytes):
         self.buffer.extend(data)
-        # Ждём появления '\r' (окончание ответа)
-        if b'\r' in self.buffer:
-            idx = self.buffer.index(b'\r')
-            response_bytes = self.buffer[:idx]  # всё до '\r'
-
-            # Преобразуем байты в HEX-строку вида "32 33 30 2E 30 20 ..."
-            hex_input = " ".join(f"{b:02X}" for b in response_bytes)
-
-            # Декодируем напрямую в структуру
+        if b'\r' in self.buffer or b'\n' in self.buffer:
+            raw = self.buffer.split(b'\r', 1)[0].strip()
             try:
-                decoded_struct = decode_direct_response(self.command, hex_input)
-                self.on_response(decoded_struct, None)
+                response = raw.decode(errors='ignore')
+                self.on_response(response, None)
             except Exception as e:
                 self.on_response(None, e)
-
-            self.transport.close()
+            if self.transport:
+                self.transport.close()
 
     def connection_lost(self, exc):
         if exc:
             self.on_response(None, exc)
 
 
-async def get_direct_data(device: str, command_str: str) -> dict:
+class SerialCommandProtocol(asyncio.Protocol):
+    def __init__(self, command: str, on_response):
+        self.transport = None
+        self.command = command.upper()
+        self.command_bytes = command.encode("ascii")
+        self.on_response = on_response
+        self.buffer = bytearray()
+
+    def connection_made(self, transport):
+        self.transport = transport
+        packet = self.command_bytes + crc16(self.command_bytes) + b'\r'
+        self.transport.write(packet)
+
+    def data_received(self, data: bytes):
+        self.buffer.extend(data)
+        if b'\r' in self.buffer:
+            raw = self.buffer.split(b'\r', 1)[0].strip()
+            try:
+                response = raw.decode(errors='ignore')
+                self.on_response(response, None)
+            except Exception as e:
+                self.on_response(None, e)
+            if self.transport:
+                self.transport.close()
+
+    def connection_lost(self, exc):
+        if exc:
+            self.on_response(None, exc)
+
+
+async def get_direct_data(device: str, command_str: str, timeout: float = 5.0) -> dict:
     """
-    Отправляет команду (напр. "QPIGS") на указанный последовательный порт,
-    ждёт ответа до символа '\r', затем возвращает структуру
-    (словарь) с полями от decode_direct_response.
+    Отправляет команду (например "QPIGS") через Serial или TCP (ELFIN).
+    Возвращает готовый dict с данными.
+    При ошибке или таймауте возвращает {}.
     """
     loop = asyncio.get_running_loop()
     fut = loop.create_future()
 
     def on_response(data, err):
-        if err:
-            if not fut.done():
-                fut.set_exception(err)
-        else:
-            if not fut.done():
+        if not fut.done():
+            if err:
+                fut.set_result(None)
+            else:
                 fut.set_result(data)
 
-    # command_str передаём как строку, e.g. "QPIGS"
-    transport, protocol = await serial_asyncio.create_serial_connection(
-        loop,
-        lambda: SerialCommandProtocol(command_str, on_response),
-        device,
-        baudrate=2400,
-        bytesize=8,
-        parity='N',
-        stopbits=1,
-        timeout=1,
-    )
+    # --- выбор транспорта ---
+    try:
+        if device.startswith("tcp://"):
+            _, addr = device.split("tcp://", 1)
+            host, port = addr.split(":")
+            port = int(port)
+            transport, protocol = await loop.create_connection(
+                lambda: ElfinTCPProtocol(command_str, on_response),
+                host,
+                port,
+            )
+        else:
+            transport, protocol = await serial_asyncio.create_serial_connection(
+                loop,
+                lambda: SerialCommandProtocol(command_str, on_response),
+                device,
+                baudrate=2400,
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+            )
+    except Exception:
+        return {}
 
     try:
-        result = await asyncio.wait_for(fut, timeout=5)
+        try:
+            result = await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            result = None
+
+
+        # print('result', result)
+        # --- парсинг в dict ---
+        if result and isinstance(result, str):
+            try:
+                parsed = decode_direct_response(command_str, result)
+                return parsed or {}
+            except Exception:
+                return {}
+        else:
+            return {}
     finally:
-        transport.close()
-    return result
+        if transport:
+            transport.close()
+
+async def set_direct_data(device: str, command_str: str, timeout: float = 5.0) -> dict:
+    """
+    Отправляет управляющую команду (например PBATC030, POP00 и т.п.) на устройство.
+    Возвращает {'status': 'ACK'} или {'status': 'NAK'} или {'error': '...'}.
+    """
+    if device.startswith("tcp://"):
+        _, data = device.split("tcp://")
+        host, port = data.split(":")
+        port = int(port)
+    else:
+        return {"error": "only tcp://host:port supported for set_direct_data"}
+
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+        cmd = command_str.strip().encode("ascii")
+        packet = cmd + crc16(cmd) + b"\r"
+
+        # print(f"[ELFIN] → {packet}")
+        writer.write(packet)
+        await writer.drain()
+
+        try:
+            data = await asyncio.wait_for(reader.read(128), timeout=timeout)
+        except asyncio.TimeoutError:
+            return {"error": "timeout waiting for ACK/NAK"}
+
+        writer.close()
+        await writer.wait_closed()
+
+        resp = data.decode(errors="ignore").strip()
+        # print(f"[ELFIN] ← {resp}")
+
+        if "ACK" in resp:
+            return {"status": "ACK"}
+        elif "NAK" in resp:
+            return {"status": "NAK"}
+        elif not resp:
+            return {"error": "empty response"}
+        else:
+            return {"raw": resp}
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# === Enums для текстовых/выборных настроек ===
+
+class BatteryTypeSetting(Enum):
+    AGM = "PBT00"
+    FLOODED = "PBT01"
+    USER = "PBT02"
+    LIFEP04 = "PBT03"  # если поддерживается
+
+class OutputSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "POP00"
+    SBU_PRIORITY = "POP01"
+    SOLAR_FIRST = "POP02"
+
+class ChargeSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "PCP00"
+    SOLAR_FIRST = "PCP01"
+    SOLAR_AND_UTILITY = "PCP02"
+
+# class InputVoltageRangeSetting(Enum):
+#     APL = "PGR00"
+#     UPS = "PGR01"
+
+# === Функции-хелперы ===
+
+async def set_battery_type(device: str, battery_type: BatteryTypeSetting) -> dict:
+    return await set_direct_data(device, battery_type.value)
+
+async def set_output_source_priority(device: str, mode: OutputSourcePrioritySetting) -> dict:
+    return await set_direct_data(device, mode.value)
+
+async def set_charge_source_priority(device: str, mode: ChargeSourcePrioritySetting) -> dict:
+    return await set_direct_data(device, mode.value)
+
+# async def set_input_voltage_range(device: str, mode: InputVoltageRangeSetting) -> dict:
+#     return await set_direct_data(device, mode.value)
+
+async def set_battery_bulk_voltage(device: str, voltage: float) -> dict:
+    cmd = f"PBAV{voltage:.2f}"
+    return await set_direct_data(device, cmd)
+
+async def set_battery_float_voltage(device: str, voltage: float) -> dict:
+    cmd = f"PBFV{voltage:.2f}"
+    return await set_direct_data(device, cmd)
+
+async def set_rated_battery_voltage(device: str, voltage: int) -> dict:
+    cmd = f"PBRV{voltage}"
+    return await set_direct_data(device, cmd)
+
+async def set_max_combined_charge_current(device: str, amps: int) -> dict:
+    cmd = f"MCHGC{amps:03d}"
+    return await set_direct_data(device, cmd)
+
+async def set_battery_charge_current(device: str, amps: int) -> dict:
+    cmd = f"PBATC{amps:03d}"
+    return await set_direct_data(device, cmd)
+
+async def set_max_utility_charge_current(device: str, amps: int) -> dict:
+    cmd = f"MUCHGC{amps:03d}"
+    return await set_direct_data(device, cmd)

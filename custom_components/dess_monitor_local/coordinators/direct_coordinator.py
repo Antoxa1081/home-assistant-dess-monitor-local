@@ -26,7 +26,7 @@ class DirectCoordinator(DataUpdateCoordinator):
             name="Direct request sensor",
             config_entry=config_entry,
             # Polling interval. Will only be polled if there are subscribers.
-            update_interval=timedelta(seconds=3),
+            update_interval=timedelta(seconds=1),
             # Set always_update to `False` if the data returned from the
             # api can be compared via `__eq__` to avoid duplicate updates
             # being dispatched to listeners
@@ -56,14 +56,17 @@ class DirectCoordinator(DataUpdateCoordinator):
         try:
             async with async_timeout.timeout(10):
                 async def fetch_device_data(device):
-                    qpigs = await get_direct_data(device, 'QPIGS')
-                    qpigs2 = await get_direct_data(device, 'QPIGS2')
-                    qpiri = await get_direct_data(device, 'QPIRI')
+                    queue = self.hass.data["dess_monitor_local_queue"]
+                    # qpigs = await get_direct_data(device, 'QPIGS')
+                    qpigs = await queue.enqueue(lambda: get_direct_data(device, 'QPIGS'))
+                    qpiri = await queue.enqueue(lambda: get_direct_data(device, 'QPIRI'))
+                    # qpigs2 = await get_direct_data(device, 'QPIGS2')
+                    # qpiri = await get_direct_data(device, 'QPIRI')
                     return device, {
                         "timestamp": datetime.now(),
                         'qpigs': qpigs,
-                        'qpigs2': qpigs2,
-                        'qpiri': qpiri
+                        'qpiri': qpiri,
+                        'qpigs2': {},
                     }
                     # return device, {
                     #     "timestamp": datetime.now(),

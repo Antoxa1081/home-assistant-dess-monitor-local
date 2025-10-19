@@ -8,10 +8,11 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 from . import hub
+from custom_components.dess_monitor_local.api.commands.direct_command_queue import CommandQueue
 
 # List of platforms to support. There should be a matching .py file for each,
 # eg <cover.py> and <sensor.py>
-PLATFORMS = [Platform.SENSOR, Platform.NUMBER]
+PLATFORMS = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT]
 
 type HubConfigEntry = ConfigEntry[hub.Hub]
 
@@ -19,12 +20,14 @@ type HubConfigEntry = ConfigEntry[hub.Hub]
 async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
     # Store an instance of the "connecting" class that does the work of speaking
     # with your actual devices.
+    queue = CommandQueue(min_delay=0.3)
+    await queue.start()
+    hass.data["dess_monitor_local_queue"] = queue
     await _migrate_data_to_options(hass, entry)
     direct_coordinator_ctx = DirectCoordinator(hass, entry)
     await asyncio.gather(
         direct_coordinator_ctx.async_config_entry_first_refresh()
     )
-
     entry.runtime_data = hub.Hub(hass, entry.data["name"], direct_coordinator_ctx)
     await entry.runtime_data.init()
     # This creates each HA object for each platform your device requires.
