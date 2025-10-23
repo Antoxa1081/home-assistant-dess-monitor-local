@@ -7,7 +7,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import DirectCoordinator
 from custom_components.dess_monitor_local.api.commands.direct_commands import ParallelMode, ChargerSourcePriority, \
-    OutputSourcePriority, ACInputVoltageRange, BatteryType
+    OutputSourcePriority, ACInputVoltageRange, BatteryType, DeviceStatusBitsB7B0, \
+    parse_device_status_bits_b7_b0
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
 
@@ -355,6 +356,36 @@ class DirectBatteryDischargeCurrentSensor(DirectCurrentSensorBase):
         super().__init__(inverter_device, coordinator, "qpigs", "battery_discharge_current",
                          "battery_discharge_current", "Battery Discharge Current")
 
+class DirectBatteryPowerSensor(DirectWattSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device,
+            coordinator,
+            data_section="qpigs",
+            data_key="_battery_power",
+            sensor_suffix="battery_power",
+            name_suffix="Battery Power"
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        qpigs = self.data.get('qpigs', {})
+        qpiri = self.data.get('qpiri', {})
+        battery_charging_current = float(qpigs.get('battery_charging_current', 0))
+        battery_discharge_current = float(qpigs.get('battery_discharge_current', 0))
+        battery_voltage = float(qpigs.get('battery_voltage', 0))
+        raw_value = (battery_charging_current - battery_discharge_current) * battery_voltage
+
+        if raw_value is not None:
+            try:
+                self._attr_native_value = float(raw_value)
+            except (ValueError, TypeError):
+                self._attr_native_value = None
+        else:
+            self._attr_native_value = None
+
+        self.async_write_ha_state()
+
 
 class DirectBatteryCapacitySensor(DirectTypedSensorBase):
     _attr_unit_of_measurement = "%"
@@ -428,6 +459,41 @@ def generate_qpiri_sensors(inverter_device, coordinator):
     ]
 
 
+class DirectDeviceStatusSensor(DirectSensorBase):
+    """Главный сенсор с битами как атрибутами."""
+    _attr_name = "Device Status"
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        """Initialize the sensor."""
+        super().__init__(inverter_device, coordinator)
+        self._attr_unique_id = f"{self._inverter_device.inverter_id}_direct_device_status"
+        self._attr_name = f"{self._inverter_device.name} Direct Device Status"
+        # self._inverter_device = inverter_device
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        qpigs = self.data["qpigs"]
+        flags = int(qpigs.get("device_status_bits_b7_b0", 0))
+        if flags & DeviceStatusBitsB7B0.FAULT:
+            self._attr_native_value = 'FAULT'
+        elif flags & DeviceStatusBitsB7B0.LINE_FAIL:
+            self._attr_native_value = 'LINE_FAIL'
+        elif flags & DeviceStatusBitsB7B0.INVERTER_OVERLOAD:
+            self._attr_native_value = 'INVERTER_OVERLOAD'
+        elif flags & DeviceStatusBitsB7B0.BATTERY_LOW:
+            self._attr_native_value = 'BATTERY_LOW'
+        self._attr_native_value = 'OK'
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self):
+        qpigs = self.data["qpigs"]
+        bits = qpigs.get("device_status_bits_b7_b0", 0)
+        attrs = parse_device_status_bits_b7_b0(bits)
+        return attrs
+
+
 DIRECT_SENSORS = [
     DirectPVPowerSensor,
     DirectPV2PowerSensor,
@@ -449,4 +515,6 @@ DIRECT_SENSORS = [
     DirectLoadPercentSensor,
     DirectBusVoltageSensor,
     DirectSCCBatteryVoltageSensor,
+    DirectDeviceStatusSensor,
+    DirectBatteryPowerSensor,
 ]

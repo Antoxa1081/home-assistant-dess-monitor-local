@@ -1,7 +1,7 @@
 import asyncio
 import re
 import struct
-from enum import Enum
+from enum import Enum, unique, IntEnum
 
 import serial_asyncio_fast as serial_asyncio
 
@@ -518,3 +518,52 @@ async def set_battery_charge_current(device: str, amps: int) -> dict:
 async def set_max_utility_charge_current(device: str, amps: int) -> dict:
     cmd = f"MUCHGC{amps:03d}"
     return await set_direct_data(device, cmd)
+
+@unique
+class DeviceStatusBitsB7B0(IntEnum):
+    FAULT = 1 << 7  # b7
+    RESERVED_B6 = 1 << 6  # b6
+    BUS_OVER = 1 << 5  # b5
+    LINE_FAIL = 1 << 4  # b4
+    BATTERY_LOW = 1 << 3  # b3
+    BATTERY_HIGH = 1 << 2  # b2
+    INVERTER_OVERLOAD = 1 << 1  # b1
+    INVERTER_ON = 1 << 0  # b0
+
+
+@unique
+class DeviceStatusBitsB10B8(IntEnum):
+    CHARGING_TO_BATTERY = 1 << 2  # b10
+    CHARGING_AC_ACTIVE = 1 << 1  # b9
+    CHARGING_SCC_ACTIVE = 1 << 0  # b8
+
+def _extract_bits(raw: str, count: int) -> str:
+    """Очищает строку, оставляя только 0/1, и возвращает ровно count бит."""
+    bits = [c for c in (raw or "") if c in "01"][:count]
+    return "".join(bits).rjust(count, "0")
+
+
+def parse_device_status_bits_b7_b0(raw: str) -> dict:
+    bits = "".join(c for c in (raw or "") if c in "01")[:8].rjust(8, "0")
+    value = int(bits, 2)
+    return {
+        "fault": bool(value & DeviceStatusBitsB7B0.FAULT),
+        "line_fail": bool(value & DeviceStatusBitsB7B0.LINE_FAIL),
+        "bus_over": bool(value & DeviceStatusBitsB7B0.BUS_OVER),
+        # "bus_under": bool(value & DeviceStatusBitsB7B0.BUS_UNDER),
+        "battery_low": bool(value & DeviceStatusBitsB7B0.BATTERY_LOW),
+        "battery_high": bool(value & DeviceStatusBitsB7B0.BATTERY_HIGH),
+        "inverter_overload": bool(value & DeviceStatusBitsB7B0.INVERTER_OVERLOAD),
+        "inverter_on": bool(value & DeviceStatusBitsB7B0.INVERTER_ON),
+        "_raw_b7_b0": bits,
+    }
+
+def parse_device_status_bits_b10_b8(raw: str) -> dict:
+    bits = "".join(c for c in (raw or "") if c in "01")[:3].rjust(3, "0")
+    value = int(bits, 2)
+    return {
+        "charging_to_battery": bool(value & DeviceStatusBitsB10B8.CHARGING_TO_BATTERY),
+        "charging_scc_active": bool(value & DeviceStatusBitsB10B8.CHARGING_SCC_ACTIVE),
+        "charging_ac_active":  bool(value & DeviceStatusBitsB10B8.CHARGING_AC_ACTIVE),
+        "_raw_b10_b8": bits,
+    }
