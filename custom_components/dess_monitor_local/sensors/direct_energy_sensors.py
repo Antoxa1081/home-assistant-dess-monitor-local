@@ -4,6 +4,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass,
 from homeassistant.const import EntityCategory, UnitOfEnergy, PERCENTAGE
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.restore_state import ExtraStoredData
 from homeassistant.util import slugify
 
 from custom_components.dess_monitor_local.sensors.direct_sensor import DirectTypedSensorBase
@@ -232,6 +233,19 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
         self.async_write_ha_state()
 
 
+class BatteryStoredData(ExtraStoredData):
+
+    def __init__(self, native_value: float | None, accumulated_energy_wh: float):
+        self.native_value = native_value
+        self.accumulated_energy_wh = accumulated_energy_wh
+
+    def as_dict(self) -> dict:
+        return {
+            "native_value": self.native_value,
+            "accumulated_energy_wh": self.accumulated_energy_wh,
+        }
+
+
 class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -246,7 +260,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             sensor_suffix="battery_state_of_charge",
             name_suffix="Battery State of Charge",
         )
-        self._accumulated_energy_wh = 100.0
+        self._accumulated_energy_wh = 0.0
         self._prev_power = None
         self._prev_ts = datetime.now()
         self._restored = False
@@ -263,17 +277,27 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         )
 
     async def async_added_to_hass(self) -> None:
+        last_extra = await self.async_get_last_extra_data()
+        if last_extra is not None:
+            data = last_extra.as_dict()
+            self._attr_native_value = float(data.get("native_value", 100.0))
+            self._accumulated_energy_wh = float(data.get("accumulated_energy_wh", 0))
+        else:
+            self._attr_native_value = 100.0
+            self._accumulated_energy_wh = 0.0
+
         state = self._hass.states.get(self._capacity_entity_id)
         self._update_battery_capacity_from_state(state)
 
-        last_data = await self.async_get_last_extra_data()
-        if last_data is not None:
-            restored = last_data.as_dict().get("native_value", None)
-            self._attr_native_value = float(restored) if restored is not None else None
-        else:
-            self._attr_native_value = None
         self._restored = True
         await super().async_added_to_hass()
+
+    async def async_get_extra_data(self) -> ExtraStoredData:
+        """Сохранение данных при выгрузке / рестарте."""
+        return BatteryStoredData(
+            self._attr_native_value,
+            self._accumulated_energy_wh,
+        )
 
     @property
     def available(self) -> bool:
@@ -301,6 +325,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
                 self._attr_native_value = None
             else:
                 self._battery_capacity_wh = value
+                self._accumulated_energy_wh = value
         except (ValueError, TypeError):
             self._battery_capacity_wh = None
             self._attr_native_value = None
@@ -368,6 +393,10 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
 
         self._attr_native_value = soc_percent
         self.async_write_ha_state()
+
+    @property
+    def native_value(self):
+        return self._attr_native_value
 
     @callback
     def _handle_coordinator_update(self) -> None:
