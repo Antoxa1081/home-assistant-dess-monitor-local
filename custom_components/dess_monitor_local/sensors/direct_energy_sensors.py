@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass, RestoreSensor
@@ -180,22 +181,29 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """
-        При обновлении координатора вычисляем мощность зарядки (A * V),
-        и если она > 0, накапливаем энергию.
-        """
+        qpigs = self.data.get("qpigs", {})
+        qpiri = self.data.get("qpiri", {})
+
         try:
-            qpigs = self.data.get("qpigs", {})
-            current = float(qpigs.get("battery_charging_current", 0))
-            voltage = float(qpigs.get("battery_voltage", 0))
-            power = current * voltage if current > 0 else None
+            current_raw = qpigs.get("battery_charging_current")
+            voltage_raw = qpiri.get("bulk_charging_voltage")
+            if current_raw is None or voltage_raw is None:
+                raise ValueError("no data")
+            current = float(current_raw)
+            voltage = float(voltage_raw)
+            if math.isnan(current) or math.isnan(voltage):
+                raise ValueError("NaN")
         except (KeyError, ValueError, TypeError):
-            power = None
+            self._prev_power = None
+            self._prev_ts = datetime.now()
+            self.async_write_ha_state()
+            return
+        if current > 0:
+            power = current * voltage
+        else:
+            power = 0.0
 
-        if power is not None:
-            self.update_energy_value(power)
-
-        # Обновляем state (накопленную энергию), даже если power оказался None
+        self.update_energy_value(power)
         self.async_write_ha_state()
 
 
@@ -214,22 +222,25 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """
-        При обновлении координатора вычисляем мощность разрядки (A * V),
-        и если она > 0, накапливаем энергию.
-        """
+        qpigs = self.data.get("qpigs", {})
         try:
-            qpigs = self.data.get("qpigs", {})
-            current = float(qpigs.get("battery_discharge_current", 0))
-            voltage = float(qpigs.get("battery_voltage", 0))
-            power = current * voltage if current > 0 else None
+            current_raw = qpigs.get("battery_discharge_current")
+            voltage_raw = qpigs.get("battery_voltage")
+            if current_raw is None or voltage_raw is None:
+                raise ValueError("no data")
+            current = float(current_raw)
+            voltage = float(voltage_raw)
+            if math.isnan(current) or math.isnan(voltage):
+                raise ValueError("NaN")
         except (KeyError, ValueError, TypeError):
-            power = None
-
-        if power is not None:
-            self.update_energy_value(power)
-
-        # Обновляем state (накопленную энергию), даже если power оказался None
+            self._prev_power = None
+            self._prev_ts = datetime.now()
+            self.async_write_ha_state()
+            return
+        power = current * voltage
+        if power <= 0:
+            power = 0.0
+        self.update_energy_value(power)
         self.async_write_ha_state()
 
 
