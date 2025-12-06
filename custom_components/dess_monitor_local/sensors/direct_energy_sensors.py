@@ -291,7 +291,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         last_extra = await self.async_get_last_extra_data()
         if last_extra is not None:
             data = last_extra.as_dict()
-            self._attr_native_value = float(data.get("native_value", 100.0))
+            self._attr_native_value = float(data.get("native_value") or 100.0)
             self._accumulated_energy_wh = float(data.get("accumulated_energy_wh", 0))
         else:
             self._attr_native_value = 100.0

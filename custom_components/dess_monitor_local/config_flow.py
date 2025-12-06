@@ -5,9 +5,10 @@ from typing import Any
 import serial.tools.list_ports
 import voluptuous as vol
 from homeassistant import config_entries, exceptions
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import selector
 import homeassistant.helpers.config_validation as cv
+
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,83 +30,63 @@ async def list_serial_ports() -> list[str]:
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    # Pick one of the available connection classes in homeassistant/config_entries.py
-    # This tells HA if it should be asking for updates, or it'll be notified of updates
-    # automatically. This example uses PUSH, as the dummy hub will notify HA of
-    # changes.
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
 
     def __init__(self):
         self._raw_sensors = False
-        self._name = None
-        self._info = None
+        self._name: str | None = None
+        self._info: dict[str, Any] | None = None
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step."""
-        # This goes through the steps to take the user through the setup process.
-        # Using this it is possible to update the UI and prompt for additional
-        # information. This example provides a single form (built from `DATA_SCHEMA`),
-        # and when that has some validated input, it calls `async_create_entry` to
-        # actually create the HA config entry. Note the "title" value is returned by
-        # `validate_input` above.
-        errors = {}
+        """Первый шаг – ввод имени."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
             try:
                 info = await validate_input(self.hass, user_input)
                 self._info = info
-                self._name = user_input['name']
+                self._name = user_input["name"]
                 return await self.async_step_select_devices()
-                # return self.async_create_entry(title=info["title"], data={
-                #     'username': user_input['username'],
-                #     'password_hash': info['password_hash'],
-                #     'dynamic_settings': user_input['dynamic_settings'],
-                #     # 'raw_sensors': user_input['raw_sensors'],
-                # })
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
-                # The error string is set here, and should be translated.
-                # This example does not currently cover translations, see the
-                # comments on `DATA_SCHEMA` for further details.
-                # Set the error on the `host` field, not the entire form.
                 errors["name"] = "invalid_auth"
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
-        # If there is no user input or there were errors, show the form again, including any errors that were found with the input.
         return self.async_show_form(
-            step_id="user", data_schema=DATA_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=DATA_SCHEMA,
+            errors=errors,
         )
 
     async def async_step_select_devices(self, user_input=None):
-        """Шаг выбора способа подключения: serial или TCP (ELFIN)."""
-
-        device_ports = await list_serial_ports()  # вернёт список вроде ['/dev/ttyUSB0', 'COM3']
-
-        errors = {}
+        """Шаг выбора способа подключения: serial или TCP (Elfin/SMG)."""
+        device_ports = await list_serial_ports()
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             device = user_input.get("device")
             host = user_input.get("host")
             port = user_input.get("port", 8899)
 
-            # Проверка корректности выбора
             if not device and not host:
-                errors["base"] = "select_or_enter"  # пользователь ничего не выбрал
+                errors["base"] = "select_or_enter"
             else:
-                # Сформировать итоговый адрес
-                device_value = f"tcp://{host}:{port}" if host else device
+                # Сохраняем единое поле device:
+                #   - либо /dev/ttyUSB0
+                #   - либо "10.0.0.106:17824"
+                device_value = f"{host}:{port}" if host else device
 
                 return self.async_create_entry(
-                    title=self._info.get("title", "Inverter"),
+                    title=self._info.get("title", "Inverter") if self._info else "Inverter",
                     data={
                         "name": self._name,
                         "device": device_value,
                     },
                 )
 
-        # Формируем форму
         return self.async_show_form(
             step_id="select_devices",
             data_schema=vol.Schema({
@@ -123,51 +104,101 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             errors=errors,
             description_placeholders={
-                "tip": "Выберите локальный порт или введите IP вашего Elfin EW10A"
-            }
+                "tip": "Выберите локальный порт или введите IP вашего Elfin EW10A / SMG-II"
+            },
         )
 
-    # @staticmethod
-    # @callback
-    # def async_get_options_flow(config_entry):
-    #     return OptionsFlow(config_entry)
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
+        """Возвращает flow для редактирования настроек (host/port/device)."""
+        return OptionsFlow(config_entry)
 
 
-# class OptionsFlow(config_entries.OptionsFlow):
-#     def __init__(self, config_entry: config_entries.ConfigEntry):
-#         self._config_entry = config_entry
-#         self._devices = []  # All available devices
-#
-#     async def async_step_init(self, user_input=None):
-#         if user_input is not None:
-#             # print('user_input', user_input)
-#             return self.async_create_entry(data=user_input)
-#
-#         return self.async_show_form(
-#             step_id="init",
-#             data_schema=vol.Schema({
-#                 vol.Required(
-#                     "devices",
-#                     default=self._config_entry.options.get('devices',
-#                                                            list(map(lambda x: str(x['pn']), active_devices)))
-#                 ): selector({
-#                     "select": {
-#                         "multiple": True,
-#                         "options": [
-#                             {"value": str(device['pn']),
-#                              "label": f'{device['devalias']}; pn: {device['pn']}; devcode: {device['devcode']}'}
-#                             for device in self._devices
-#                         ]
-#                     }
-#                 }),
-#                 vol.Optional("dynamic_settings",
-#                              default=self._config_entry.options.get('dynamic_settings', False)): bool,
-#                 vol.Optional("raw_sensors",
-#                              default=self._config_entry.options.get('raw_sensors', False)): bool,
-#                 vol.Optional("direct_request_protocol",
-#                              default=self._config_entry.options.get('direct_request_protocol', False)): bool,
-#             })
-#         )
+class OptionsFlow(config_entries.OptionsFlow):
+    """Опции интеграции: редактирование host/port или serial-порта."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry):
+        self._config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        errors: dict[str, str] = {}
+
+        # Текущие данные – сначала options, потом data как fallback
+        data = {
+            **self._config_entry.data,
+            **self._config_entry.options,
+        }
+        current_device: str = data.get("device", "") or ""
+
+        # Попробуем выделить host/port из device, если это "ip:port"
+        current_host = ""
+        current_port = 8899
+
+        if current_device and ":" in current_device and not current_device.startswith("/"):
+            # что-то вроде "10.0.0.106:17824"
+            host_part, port_part = current_device.rsplit(":", 1)
+            current_host = host_part
+            try:
+                current_port = int(port_part)
+            except (ValueError, TypeError):
+                current_port = 8899
+
+        # Список доступных serial-портов
+        device_ports = await list_serial_ports()
+
+        if user_input is not None:
+            device = user_input.get("device")
+            host = user_input.get("host")
+            port = user_input.get("port", 8899)
+
+            if not device and not host:
+                errors["base"] = "select_or_enter"
+            else:
+                new_device_value = f"{host}:{port}" if host else device
+
+                # Сохраняем в options (data остаётся как было)
+                return self.async_create_entry(
+                    title="",  # title не меняем
+                    data={
+                        "device": new_device_value,
+                    },
+                )
+
+        # Формируем форму для изменения
+        # Если у нас текущий host выделен, то по умолчанию в выпадающем списке device оставляем пусто,
+        # чтобы не путать пользователя: он сейчас в режиме TCP.
+        default_device = "" if current_host else current_device
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Optional(
+                    "device",
+                    default=default_device,
+                ): selector({
+                    "select": {
+                        "multiple": False,
+                        "options": [
+                            {"value": d, "label": d}
+                            for d in device_ports
+                        ],
+                    }
+                }),
+                vol.Optional(
+                    "host",
+                    default=current_host,
+                ): cv.string,
+                vol.Optional(
+                    "port",
+                    default=current_port,
+                ): cv.port,
+            }),
+            errors=errors,
+            description_placeholders={
+                "tip": "Вы можете сменить serial-порт или IP/порт Elfin/SMG-II",
+            },
+        )
 
 
 class CannotConnect(exceptions.HomeAssistantError):
@@ -179,4 +210,4 @@ class InvalidHost(exceptions.HomeAssistantError):
 
 
 class InvalidAuth(exceptions.HomeAssistantError):
-    """Error to indicate there is an invalid hostname."""
+    """Error to indicate there is an invalid auth."""
