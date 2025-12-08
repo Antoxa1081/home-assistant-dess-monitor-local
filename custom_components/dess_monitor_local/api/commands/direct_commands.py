@@ -677,8 +677,8 @@ def modbus_to_qpigs(s: dict) -> dict:
     battery_charging_current = max(0, int(s["battery_current"]))   # заряд +
     battery_discharge_current = max(0, int(-s["battery_current"]))  # разряд +
 
-    pv_current_int = int(s["pv_current"])
-    pv_voltage_value = 0.0 if pv_current_int == 0 else s["pv_voltage"]
+    pv_current_int = s["pv_current"]
+    pv_voltage_value = s["pv_voltage"]
     return {
         "grid_voltage": f"{s['mains_voltage']:.1f}",
         "grid_frequency": f"{s['mains_frequency']:.1f}",
@@ -691,8 +691,9 @@ def modbus_to_qpigs(s: dict) -> dict:
         "battery_voltage": f"{s['battery_voltage']:.2f}",
         "battery_charging_current": f"{battery_charging_current:03d}",
         "battery_capacity": "100",  # SOC можно позже взять из отдельного регистра
-        "inverter_heat_sink_temperature": f"{s['temp_inverter']:04d}",
-        "pv_input_current": f"{pv_current_int:04d}",
+        "inverter_heat_sink_temperature": f"{s['temp_inverter']:.1f}", ### or temp_dcdc
+        "inverter_dcdc_module_temperature": f"{s['temp_dcdc']:.1f}", ### or temp_dcdc
+        "pv_input_current": f"{pv_current_int:.1f}",
         "pv_input_voltage": f"{pv_voltage_value:.1f}",
         "scc_battery_voltage": f"{s['battery_voltage']:.2f}",
         "battery_discharge_current": f"{battery_discharge_current:05d}",

@@ -299,6 +299,17 @@ class DirectInverterTemperatureSensor(DirectTemperatureSensorBase):
             name_suffix="Inverter Temperature"
         )
 
+class DirectInverterDCModuleTemperatureSensor(DirectTemperatureSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device,
+            coordinator,
+            data_section="qpigs",
+            data_key="inverter_dcdc_module_temperature",
+            sensor_suffix="inverter_dc_dc_temperature",
+            name_suffix="Inverter DC-DC Module Temperature"
+        )
+
 
 class DirectGridVoltageSensor(DirectVoltageSensorBase):
     def __init__(self, inverter_device, coordinator):
@@ -518,6 +529,7 @@ DIRECT_SENSORS = [
     DirectBatteryCapacitySensor,
     DirectInverterOutputPowerSensor,
     DirectInverterTemperatureSensor,
+    DirectInverterDCModuleTemperatureSensor,
     DirectGridVoltageSensor,
     DirectGridFrequencySensor,
     DirectACGridInPowerSensor,
