@@ -686,6 +686,7 @@ def modbus_to_qpigs(s: dict) -> dict:
         "ac_output_frequency": f"{s['output_frequency']:.2f}",
         "output_apparent_power": f"{abs(s['output_active_power']):04d}",
         "output_active_power": f"{abs(s['output_active_power']):04d}",
+
         "load_percent": f"{s['load_percent']:03d}",
         "bus_voltage": f"{bus_voltage}",
         "battery_voltage": f"{s['battery_voltage']:.2f}",
@@ -700,7 +701,7 @@ def modbus_to_qpigs(s: dict) -> dict:
         "device_status_bits_b7_b0": "00010000",
         "battery_voltage_offset": "00",
         "eeprom_version": "00",
-        "pv_charging_power": f"{int(s['pv_charge_power']):05d}",
+        "pv_charging_power": f"{int(s['pv_power']):05d}",
         "device_status_bits_b10_b8": "010",
         "grid_ac_in_power": f"{abs(s['mains_power']):05d}",
     }
