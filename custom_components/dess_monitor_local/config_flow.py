@@ -101,6 +101,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }),
                 vol.Optional("host"): cv.string,
                 vol.Optional("port", default=8899): cv.port,
+                vol.Optional("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
             }),
             errors=errors,
             description_placeholders={
@@ -173,18 +174,18 @@ class OptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                vol.Optional(
-                    "device",
-                    default=default_device,
-                ): selector({
-                    "select": {
-                        "multiple": False,
-                        "options": [
-                            {"value": d, "label": d}
-                            for d in device_ports
-                        ],
-                    }
-                }),
+                # vol.Optional(
+                #     "device",
+                #     default=default_device,
+                # ): selector({
+                #     "select": {
+                #         "multiple": False,
+                #         "options": [
+                #             {"value": d, "label": d}
+                #             for d in device_ports
+                #         ],
+                #     }
+                # }),
                 vol.Optional(
                     "host",
                     default=current_host,
@@ -193,6 +194,13 @@ class OptionsFlow(config_entries.OptionsFlow):
                     "port",
                     default=current_port,
                 ): cv.port,
+                vol.Optional(
+                    "update_interval",
+                    default=self._config_entry.options.get(
+                        "update_interval",
+                        self._config_entry.data.get("update_interval", 10),
+                    ),
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
             }),
             errors=errors,
             description_placeholders={

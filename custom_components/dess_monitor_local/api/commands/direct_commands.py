@@ -405,7 +405,7 @@ async def _read_modbus_block(
     start: int,
     count: int,
     unit_id: int = UNIT_ID,
-    timeout: float = 2.0,
+    timeout: float = 30.0,
 ) -> list[int]:
     """
     Async Modbus RTU-over-TCP:
@@ -490,7 +490,7 @@ async def _write_modbus_single_register(
     address: int,
     value: int,
     unit_id: int = UNIT_ID,
-    timeout: float = 2.0,
+    timeout: float = 30.0,
 ) -> dict:
     """
     Запись одного Holding-регистра Modbus RTU-over-TCP.
@@ -632,7 +632,7 @@ async def read_modbus_snapshot_async(host: str, port: int) -> tuple[dict, dict]:
     }
 
     # --- блок 300–337 (конфиг) ---
-    block_300 = await _read_modbus_block(host, port, 300, 38)
+    block_300 = await _read_modbus_block(host, port, 300, 38, UNIT_ID, 30) # TODO: change
 
     def R300(addr: int) -> int:
         return block_300[addr - 300]
@@ -768,7 +768,7 @@ def modbus_to_qpiri(c: dict) -> dict:
 # ==========================
 
 
-async def get_direct_data(device: str, command_str: str, timeout: float = 5.0) -> dict:
+async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) -> dict:
     """
     Универсальный доступ к инвертору.
 
@@ -875,7 +875,7 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 5.0) -
 # ==========================
 
 
-async def set_direct_data(device: str, command_str: str, timeout: float = 5.0) -> dict:
+async def set_direct_data(device: str, command_str: str, timeout: float = 30.0) -> dict:
     """
     Отправляет управляющую команду (PBATC, POP, PCP, ...) на классический Voltronic через TCP.
     Для Modbus/SMG-II управление делается через регистры в set_* методах.
