@@ -701,6 +701,7 @@ def modbus_to_qpigs(s: dict) -> dict:
         "eeprom_version": "00",
         "pv_charging_power": f"{int(s['pv_charge_power']):05d}",
         "device_status_bits_b10_b8": "010",
+        "grid_ac_in_power": f"{abs(s['mains_power']):05d}",
     }
 
 

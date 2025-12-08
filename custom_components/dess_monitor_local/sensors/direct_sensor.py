@@ -194,6 +194,17 @@ class DirectPVPowerSensor(DirectWattSensorBase):
             name_suffix="PV Power"
         )
 
+class DirectACGridInPowerSensor(DirectWattSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device,
+            coordinator,
+            data_section="qpigs",
+            data_key="grid_ac_in_power",
+            sensor_suffix="grid_ac_in_power",
+            name_suffix="Grid AC In Power"
+        )
+
 
 class DirectPV2PowerSensor(DirectWattSensorBase):  # можно и от DirectSensorBase, если не нужен unit/class
     def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
@@ -509,6 +520,7 @@ DIRECT_SENSORS = [
     DirectInverterTemperatureSensor,
     DirectGridVoltageSensor,
     DirectGridFrequencySensor,
+    DirectACGridInPowerSensor,
     DirectACOutputVoltageSensor,
     DirectACOutputFrequencySensor,
     DirectOutputApparentPowerSensor,
