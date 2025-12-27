@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+from custom_components.dess_monitor_local.parsers.common_parser import BaseInverterParser
 from custom_components.dess_monitor_local.types import InverterSensorData, InverterSettings, InverterRatedParams, \
     InverterSnapshot
 
@@ -97,12 +98,7 @@ class EasunSMG2ModbusConfig(BaseModel):
         raise ValueError(f"Invalid config value: {v}")
 
 
-class EasunSMG2ModbusParser:
-    """
-    Парсер Modbus-данных для Easun SMG II.
-    Реализует InverterSnapshotParser.
-    """
-
+class EasunSMG2ModbusParser(BaseInverterParser):
     def sensors_from(
             self,
             s: EasunSMG2ModbusSensors,
