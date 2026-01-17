@@ -55,7 +55,7 @@ class DirectCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         try:
-            async with async_timeout.timeout(60):
+            async with async_timeout.timeout(120):
                 async def fetch_device_data(device):
                     queue = self.hass.data["dess_monitor_local_queue"]
                     # qpigs = await get_direct_data(device, 'QPIGS')

@@ -114,7 +114,15 @@ class InverterOutputPrioritySelect(SelectBase):
     def _handle_coordinator_update(self) -> None:
         data = self.coordinator.data[self._inverter_device.inverter_id]
         # device_data = self._inverter_device.device_data
-        self._attr_current_option = resolve_output_priority(data)
+        mapper = {
+            'UtilityFirst': 'UtilityFirst',
+            'SBU': 'SBU',
+            'Solar': 'Solar',
+            'SolarFirst': 'Solar',
+        }
+        priority = resolve_output_priority(data)
+        mapped_priority = mapper.get(priority, priority)
+        self._attr_current_option = mapped_priority
         self.async_write_ha_state()
 
     async def async_select_option(self, option: str):
