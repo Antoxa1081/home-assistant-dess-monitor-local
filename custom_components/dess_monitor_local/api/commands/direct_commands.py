@@ -20,137 +20,8 @@ def decode_ascii_response(hex_string: str) -> str:
     return ascii_str
 
 
-def is_hex_string(s: str) -> bool:
-    """Проверяет, состоит ли строка только из hex-символов или байтов в формате 'AA BB CC'."""
-    s = s.strip().replace(" ", "")
-    return bool(re.fullmatch(r"[0-9A-Fa-f]+", s)) and len(s) % 2 == 0
-
-
-# ==========================
-# CRC ДЛЯ VOLTRONIC / SUNPOLO ASCII
-# ==========================
-
-
-def crc16(data: bytes) -> bytes:
-    """CRC16, как в протоколе Voltronic/Axpert/SUNPOLO (ASCII-команды)."""
-    crc = 0
-    for b in data:
-        x = (crc >> 8) ^ b
-        x ^= x >> 4
-        crc = ((crc << 8) ^ (x << 12) ^ (x << 5) ^ x) & 0xFFFF
-    return struct.pack(">H", crc)
-
-
-# ==========================
-# ENUMS / TRANSFORMS
-# ==========================
-
-
-class BatteryType(Enum):
-    AGM = "0"
-    Flooded = "1"
-    UserDefined = "2"
-    Pylontech = "3"
-    WECO = "5"
-    Soltaro = "6"
-    LIB = "8"
-    LIC = "9"
-
-
-class ACInputVoltageRange(Enum):
-    Appliance = "0"
-    UPS = "1"
-
-
-class OutputSourcePriority(Enum):
-    SolarUtilityBattery = "0"  # Solar-Utility-Battery
-    SolarBatteryUtility = "1"  # Solar-Battery-Utility
-
-
-class ChargerSourcePriority(Enum):
-    SolarFirst = "0"
-    SolarAndUtility = "1"
-    OnlySolar = "2"
-
-
-class ParallelMode(Enum):
-    OffGrid = "0"
-    Hybrid = "1"
-
-
-class Topology(Enum):
-    Transformerless = "0"
-    Transformer = "1"
-
-
-class SunpoloInverterMode(Enum):
-    PowerOn = "00"
-    Standby = "01"
-    Bypass = "02"
-    Battery = "03"
-    Fault = "04"
-    Hybrid = "05"
-
-
-# --- Ваши старые Enums (оставляю) ---
-class OutputSourcePriorityVoltronic(Enum):
-    UtilityFirst = "0"  # сеть
-    SolarFirst = "1"
-    SBU = "2"  # Solar → Battery → Utility
-    BatteryOnly = "4"
-    UtilityOnly = "5"
-    SolarAndUtility = "6"
-    Smart = "7"
-
-
-class ChargerSourcePriorityVoltronic(Enum):
-    UtilityFirst = "0"
-    SolarFirst = "1"
-    SolarAndUtility = "2"
-    OnlySolar = "3"
-
-
-class ParallelModeVoltronic(Enum):
-    Master = "0"
-    Slave = "1"
-    Standalone = "2"
-
-
-class OperatingModeVoltronic(Enum):
-    PowerOn = "P"
-    Standby = "S"
-    Line = "L"
-    Battery = "B"
-    ShutdownApproaching = "D"
-    Fault = "F"
-
-
-def transform_qpiri_value(index: int, value: str) -> str:
-    """Legacy transform для классического QPIRI (Voltronic)."""
-    try:
-        match index:
-            case 12:
-                return BatteryType(value).name
-            case 15:
-                return ACInputVoltageRange(value).name
-            case 16:
-                return OutputSourcePriorityVoltronic(value).name
-            case 17:
-                return ChargerSourcePriorityVoltronic(value).name
-            case 21:
-                return ParallelModeVoltronic(value).name
-            case _:
-                return value
-    except ValueError:
-        return value
-
-
-# ==========================
-# DECODERS: VOLTRONIC (Legacy)
-# ==========================
-
-
 def decode_qpigs(ascii_str: str) -> dict:
+    """Разбор ответа QPIGS (ASCII) в dict."""
     values = ascii_str.split()
     fields = [
         "grid_voltage",
@@ -191,6 +62,73 @@ def decode_qpigs2(ascii_str: str) -> dict:
     return dict(zip(fields, values))
 
 
+class BatteryType(Enum):
+    AGM = "0"
+    Flooded = "1"
+    UserDefined = "2"
+    LIB = "3"
+    LIC = "4"
+    RESERVED = "5"
+    RESERVED_1 = "6"
+    RESERVED_2 = "7"
+
+
+class ACInputVoltageRange(Enum):
+    Appliance = "0"
+    UPS = "1"
+
+
+class OutputSourcePriority(Enum):
+    UtilityFirst = "0"  # сеть
+    SolarFirst = "1"
+    SBU = "2"  # Solar → Battery → Utility
+    BatteryOnly = "4"
+    UtilityOnly = "5"
+    SolarAndUtility = "6"
+    Smart = "7"  # в некоторых прошивках
+
+
+class ChargerSourcePriority(Enum):
+    UtilityFirst = "0"
+    SolarFirst = "1"
+    SolarAndUtility = "2"
+    OnlySolar = "3"
+
+
+class ParallelMode(Enum):
+    Master = "0"
+    Slave = "1"
+    Standalone = "2"
+
+
+class OperatingMode(Enum):
+    PowerOn = "P"
+    Standby = "S"
+    Line = "L"
+    Battery = "B"
+    ShutdownApproaching = "D"
+    Fault = "F"
+
+
+def transform_qpiri_value(index: int, value: str) -> str:
+    try:
+        match index:
+            case 12:
+                return BatteryType(value).name
+            case 15:
+                return ACInputVoltageRange(value).name
+            case 16:
+                return OutputSourcePriority(value).name
+            case 17:
+                return ChargerSourcePriority(value).name
+            case 21:
+                return ParallelMode(value).name
+            case _:
+                return value
+    except ValueError:
+        return value
+
+
 def decode_qpiri(ascii_str: str) -> dict:
     values = ascii_str.split()
     fields = [
@@ -223,6 +161,7 @@ def decode_qpiri(ascii_str: str) -> dict:
         "reserved_b",
         "reserved_ccc",
     ]
+
     return {
         field: transform_qpiri_value(i, value)
         for i, (field, value) in enumerate(zip(fields, values))
@@ -232,7 +171,7 @@ def decode_qpiri(ascii_str: str) -> dict:
 def decode_qmod(ascii_str: str) -> dict:
     mode_code = ascii_str.strip()[0]
     try:
-        mode = OperatingModeVoltronic(mode_code)
+        mode = OperatingMode(mode_code)
     except ValueError:
         mode = "Unknown"
     return {"operating_mode": mode}
@@ -270,175 +209,16 @@ def decode_qbeqi(ascii_str: str) -> dict:
     return dict(zip(fields, values))
 
 
-# ==========================
-# DECODERS: SUNPOLO6K (NEW)
-# ==========================
-
-
-def _strip_sunpolo_ascii(text: str) -> str:
-    """
-    У SUNPOLO ответ выглядит как:
-      ^D106....<CRC16><CR>
-    Мы в протоколе уже отрезаем CRC16 bytes; тут только чистим скобки/CR/LF.
-    """
-    s = (text or "").strip()
-    s = s.replace("\r", "").replace("\n", "")
-    s = s.strip().replace("(", "").replace(")", "")
-    return s
-
-
-def _csv_parts(s: str) -> list[str]:
-    return [p.strip() for p in s.split(",") if p is not None]
-
-
-def _to_int(x: str):
-    try:
-        return int(x)
-    except Exception:
-        return None
-
-
-def _div10(x: str):
-    try:
-        return float(x) / 10.0
-    except Exception:
-        return None
-
-
-def decode_p005gs(ascii_str: str) -> dict:
-    """
-    ^P005GS -> Device: ^D106BBBB,CCC,DDDD,EEE,FFFF,GGGG,HHH,III,JJJ,KKK,LLL,MMM,NNN,OOO,PPP,QQQ,RRRR,SSSS,TTTT,UUUU,V,W,X,Y,Z,a,b,c
-    """
-    s = _strip_sunpolo_ascii(ascii_str)
-    if s.startswith("^D106"):
-        s = s[5:]
-    s = s.strip().strip(",")
-
-    parts = _csv_parts(s)
-
-    def get(i, default=""):
-        return parts[i] if i < len(parts) else default
-
-    out = {
-        # BBBB,CCC,DDDD,EEE,FFFF,GGGG,HHH,III
-        "grid_voltage_v": _div10(get(0)),
-        "grid_frequency_hz": _div10(get(1)),
-        "ac_output_voltage_v": _div10(get(2)),
-        "ac_output_frequency_hz": _div10(get(3)),
-        "output_apparent_power_va": _to_int(get(4)),
-        "output_active_power_w": _to_int(get(5)),
-        "load_percent": _to_int(get(6)),
-        "battery_voltage_v": _div10(get(7)),
-
-        # LLL,MMM,NNN,OOO
-        "battery_discharge_current_a": _to_int(get(10)),
-        "battery_charge_current_a": _to_int(get(11)),
-        "battery_capacity_percent": _to_int(get(12)),
-        "inverter_heatsink_temp_c": _to_int(get(13)),
-
-        # PV watts/volts (RRRR,SSSS,TTTT,UUUU)
-        "pv1_power_w": _to_int(get(16)),
-        "pv2_power_w": _to_int(get(17)),
-        "pv1_voltage_v": _div10(get(18)),
-        "pv2_voltage_v": _div10(get(19)),
-    }
-
-    # сохранить неизвестные JJJ/KKK/PPP/QQQ и хвостовые флаги
-    out["raw_fields"] = parts
-    return out
-
-
-def decode_p007piri(ascii_str: str) -> dict:
-    """
-    ^P007PIRI -> Device: ^D088BBBB,CCC,DDDD,EEE,FFF,GGGG,HHHH,III,JJJ,KKK,LLL,MMM,NNN,O,PPP,QQQ,R,S,T,U,V,W,X,Y,Z,aa
-    """
-    s = _strip_sunpolo_ascii(ascii_str)
-    if s.startswith("^D088"):
-        s = s[5:]
-    s = s.strip().strip(",")
-
-    parts = _csv_parts(s)
-
-    def get(i, default=""):
-        return parts[i] if i < len(parts) else default
-
-    # Преобразования:
-    # BBBB=2300 -> 230.0V; CCC=243 -> 24.3A; EEE=500 -> 50.0Hz; III=480 -> 48.0V; MMM=564 -> 56.4V etc.
-    out = {
-        "rated_grid_voltage_v": _div10(get(0)),
-        "rated_grid_current_a": _div10(get(1)),
-        "rated_output_voltage_v": _div10(get(2)),
-        "rated_output_frequency_hz": _div10(get(3)),
-        "rated_output_current_a": _div10(get(4)),
-        "rated_output_apparent_power_va": _to_int(get(5)),
-        "rated_output_active_power_w": _to_int(get(6)),
-        "rated_battery_voltage_v": _div10(get(7)),
-        "battery_recharge_voltage_v": _div10(get(8)),
-        "battery_full_restore_discharge_voltage_v": _div10(get(9)),
-        "battery_under_voltage_v": _div10(get(10)),
-        "battery_bulk_voltage_v": _div10(get(11)),
-        "battery_float_voltage_v": _div10(get(12)),
-        "battery_type": (BatteryType(get(13)).name if get(13) in {e.value for e in BatteryType} else get(13)),
-        "max_ac_charging_current_a": _to_int(get(14)),
-        "max_charging_current_a": _to_int(get(15)),
-        "input_voltage_range": (ACInputVoltageRange(get(16)).name if get(16) in {e.value for e in ACInputVoltageRange} else get(16)),
-        "output_source_priority": (OutputSourcePriority(get(17)).name if get(17) in {e.value for e in OutputSourcePriority} else get(17)),
-        "charger_source_priority": (ChargerSourcePriority(get(18)).name if get(18) in {e.value for e in ChargerSourcePriority} else get(18)),
-        "parallel_max_number": _to_int(get(19)),
-        "type": (ParallelMode(get(20)).name if get(20) in {e.value for e in ParallelMode} else get(20)),
-        "topology": (Topology(get(21)).name if get(21) in {e.value for e in Topology} else get(21)),
-        "output_mode": _to_int(get(22)),  # 0 single, 1 parallel, 2/3/4 3-phase roles
-        "solar_supply_priority": _to_int(get(23)),
-        "country_customized_regulations": get(25),
-    }
-    out["raw_fields"] = parts
-    return out
-
-
-def decode_p006mod(ascii_str: str) -> dict:
-    """
-    ^P006MOD -> Device: ^D005BB
-      BB:
-        00 Power on
-        01 Standby
-        02 Bypass
-        03 Battery
-        04 Fault
-        05 Hybrid
-    """
-    s = _strip_sunpolo_ascii(ascii_str)
-    if s.startswith("^D005"):
-        s = s[5:]
-    s = s.strip()
-    bb = s[:2] if len(s) >= 2 else s
-    try:
-        mode = SunpoloInverterMode(bb).name
-    except Exception:
-        mode = "Unknown"
-    return {"inverter_mode": mode, "raw": bb}
-
-
-def decode_sunpolo_model(ascii_str: str) -> dict:
-    """
-    QMN -> SUNPOLO 6K: ((AAIII-6000
-    В доке ответ начинается с '(('.
-    """
-    s = _strip_sunpolo_ascii(ascii_str)
-    s = s.lstrip("(")
-    return {"model": s.strip()}
-
-
-# ==========================
-# УНИВЕРСАЛЬНЫЙ ПАРСЕР
-# ==========================
+def is_hex_string(s: str) -> bool:
+    """Проверяет, состоит ли строка только из hex-символов или байтов в формате 'AA BB CC'."""
+    s = s.strip().replace(" ", "")
+    return bool(re.fullmatch(r"[0-9A-Fa-f]+", s)) and len(s) % 2 == 0
 
 
 def decode_direct_response(command: str, input_str: str) -> dict:
     """
-    Универсальный парсер: определяет, hex это или ASCII, и декодирует в dict.
-    Поддерживает:
-      - классический Voltronic: QPIGS/QPIRI/QMOD/...
-      - SUNPOLO6K: ^P005GS/^P007PIRI/^P006MOD/QMN/...
+    Универсальный парсер: определяет, hex это или ASCII, и декодирует
+    в dict в зависимости от команды.
     """
     if not input_str:
         return {"error": "empty response"}
@@ -453,113 +233,96 @@ def decode_direct_response(command: str, input_str: str) -> dict:
         ascii_str = input_str.strip()
 
     # убираем скобки и CR/LF
-    ascii_str = ascii_str.strip().replace("\r", "").replace("\n", "")
+    ascii_str = ascii_str.strip().replace("(", "").replace(")", "").replace("\r", "").replace("\n", "")
 
     if ascii_str.startswith("NAK") or "NAK" in ascii_str:
         return {"error": "NAK response received. Command not accepted."}
 
-    cmd = (command or "").strip()
-
-    # --- SUNPOLO ---
-    if cmd.upper() == "^P005GS":
-        return decode_p005gs(ascii_str)
-    if cmd.upper() == "^P007PIRI":
-        return decode_p007piri(ascii_str)
-    if cmd.upper() == "^P006MOD":
-        return decode_p006mod(ascii_str)
-    if cmd.upper() == "QMN":
-        return decode_sunpolo_model(ascii_str)
-
-    # --- Legacy Voltronic ---
-    match cmd.upper():
+    match command.upper():
         case "QPIGS":
-            # Voltronic ответы чаще в формате "(...." и разделены пробелами
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qpigs(cleaned)
+            return decode_qpigs(ascii_str)
         case "QPIGS2":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qpigs2(cleaned)
+            return decode_qpigs2(ascii_str)
         case "QPIRI":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qpiri(cleaned)
+            return decode_qpiri(ascii_str)
         case "QMOD":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qmod(cleaned)
+            return decode_qmod(ascii_str)
+        case "QMN":
+            return decode_qmn(ascii_str)
         case "QID" | "QSID":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qid(cleaned)
+            return decode_qid(ascii_str)
         case "QFLAG":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qflag(cleaned)
+            return decode_qflag(ascii_str)
         case "QVFW":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qvfw(cleaned)
+            return decode_qvfw(ascii_str)
         case "QBEQI":
-            cleaned = ascii_str.strip().replace("(", "").replace(")", "")
-            return decode_qbeqi(cleaned)
+            return decode_qbeqi(ascii_str)
         case _:
             return {"Raw": ascii_str}
 
 
-# ==========================
-# КАРТЫ КОМАНД
-# ==========================
-
-# SUNPOLO6K команды (ASCII, CRC добавляем сами)
-sunpolo_commands = {
-    "P005GS": "^P005GS",
-    "PIRI": "^P007PIRI",
-    "MOD": "^P006MOD",
-    "FWS": "^P006FWS",
-    "VFW": "^P006VFW",
-    "FLAG": "^P007FLAG",
-    "ID": "^P005ID",
-    "DI": "^P005DI",
-    "QMN": "QMN",
+direct_commands = {
+    "QPIGS": "5E 50 30 30 35 47 53 58 14 0D",
+    "QPIGS2": "51 50 49 47 53 32 2B 8A 0D",
+    "QPIRI": "5E 50 30 30 37 50 49 52 49 EE 38 0D",
+    "QMOD": "5E 50 30 30 36 4D 4F 44 DD BE 0D",
+    "QPIWS": "51 50 49 57 53 B4 DA 0D",
+    "QVFW": "51 56 46 57 62 99 0D",
+    "QMCHGCR": "51 4D 43 48 47 43 52 D8 55 0D",
+    "QMUCHGCR": "51 4D 55 43 48 47 43 52 26 34 0D",
+    "QFLAG": "51 46 4C 41 47 98 74 0D",
+    "QSID": "51 53 49 44 BB 05 0D",
+    "QID": "51 49 44 D6 EA 0D",
+    "QMN": "51 4D 4E BB 64 0D",
+    "QBEQI": "51 42 45 51 49 31 6B 0D",
 }
 
-# Legacy voltronic команды (ASCII, CRC добавляем сами)
-voltronic_commands = {
-    "QPIGS": "QPIGS",
-    "QPIGS2": "QPIGS2",
-    "QPIRI": "QPIRI",
-    "QMOD": "QMOD",
-    "QPIWS": "QPIWS",
-    "QVFW": "QVFW",
-    "QMCHGCR": "QMCHGCR",
-    "QMUCHGCR": "QMUCHGCR",
-    "QFLAG": "QFLAG",
-    "QSID": "QSID",
-    "QID": "QID",
-    "QMN": "QMN",
-    "QBEQI": "QBEQI",
-}
 
-def get_command_ascii(command_name: str) -> str:
-    name = (command_name or "").upper()
-    if name in sunpolo_commands:
-        return sunpolo_commands[name]
-    if name in voltronic_commands:
-        return voltronic_commands[name]
-    return "Unknown command"
+def get_command_hex(command_name: str) -> str:
+    return direct_commands.get(command_name.upper(), "Unknown command")
+
+
+def get_command_name_by_hex(hex_string: str) -> str:
+    normalized_input = hex_string.strip().upper().replace("  ", " ")
+    for name, hex_cmd in direct_commands.items():
+        if normalized_input == hex_cmd.upper():
+            return name
+    return "Unknown HEX command"
 
 
 # ==========================
-# ПРОТОКОЛЫ TCP/Serial
+# CRC ДЛЯ VOLTRONIC ASCII
 # ==========================
 
-class VoltronicTCPProtocol(asyncio.Protocol):
-    """Классический Voltronic/Axpert TCP: ASCII-команда + CRC16 + CR; ответ обычно ASCII до CR."""
-    def __init__(self, command_ascii: str, on_response):
+
+def crc16(data: bytes) -> bytes:
+    """CRC16, как в протоколе Voltronic (QPIGS/QPI/QMOD)."""
+    crc = 0
+    for b in data:
+        x = (crc >> 8) ^ b
+        x ^= x >> 4
+        crc = ((crc << 8) ^ (x << 12) ^ (x << 5) ^ x) & 0xFFFF
+    return struct.pack(">H", crc)
+
+
+# ==========================
+# КЛАССЫ ПРОТОКОЛОВ VOLTRONIC
+# ==========================
+
+
+class ElfinTCPProtocol(asyncio.Protocol):
+    """Классический Voltronic-по-TCP (Elfin) протокол: ASCII-команды с CRC."""
+
+    def __init__(self, command: str, on_response):
         self.transport = None
-        self.command_ascii = command_ascii
+        self.command = command.upper()
+        self.command_bytes = command.encode("ascii")
         self.on_response = on_response
         self.buffer = bytearray()
 
     def connection_made(self, transport):
         self.transport = transport
-        cmd = self.command_ascii.encode("ascii")
-        packet = cmd + crc16(cmd) + b"\r"
+        packet = self.command_bytes + crc16(self.command_bytes) + b"\r"
         self.transport.write(packet)
 
     def data_received(self, data: bytes):
@@ -579,60 +342,19 @@ class VoltronicTCPProtocol(asyncio.Protocol):
             self.on_response(None, exc)
 
 
-class SunpoloTCPProtocol(asyncio.Protocol):
-    """
-    SUNPOLO6K TCP:
-      TX: b'^P005GS' + CRC16 + b'\r'
-      RX: b'^D106....' + CRC16(2 bytes) + b'\r'
-    """
-    def __init__(self, command_ascii: str, on_response):
-        self.transport = None
-        self.command_ascii = command_ascii
-        self.on_response = on_response
-        self.buffer = bytearray()
-
-    def connection_made(self, transport):
-        self.transport = transport
-        cmd = self.command_ascii.encode("ascii")
-        packet = cmd + crc16(cmd) + b"\r"
-        self.transport.write(packet)
-
-    def data_received(self, data: bytes):
-        self.buffer.extend(data)
-        if b"\r" not in self.buffer:
-            return
-
-        frame = self.buffer.split(b"\r", 1)[0]  # до CR
-
-        try:
-            # В конце: 2 байта CRC16 ответа. Отрезаем их.
-            payload = frame[:-2] if len(frame) >= 3 else frame
-            text = payload.decode("ascii", errors="ignore")
-            text = text.replace("\n", "").replace("\r", "")
-            self.on_response(text, None)
-        except Exception as e:
-            self.on_response(None, e)
-        finally:
-            if self.transport:
-                self.transport.close()
-
-    def connection_lost(self, exc):
-        if exc:
-            self.on_response(None, exc)
-
-
 class SerialCommandProtocol(asyncio.Protocol):
     """Классический Voltronic по UART/USB: ASCII-команды с CRC."""
-    def __init__(self, command_ascii: str, on_response):
+
+    def __init__(self, command: str, on_response):
         self.transport = None
-        self.command_ascii = command_ascii
+        self.command = command.upper()
+        self.command_bytes = command.encode("ascii")
         self.on_response = on_response
         self.buffer = bytearray()
 
     def connection_made(self, transport):
         self.transport = transport
-        cmd = self.command_ascii.encode("ascii")
-        packet = cmd + crc16(cmd) + b"\r"
+        packet = self.command_bytes + crc16(self.command_bytes) + b"\r"
         self.transport.write(packet)
 
     def data_received(self, data: bytes):
@@ -653,17 +375,19 @@ class SerialCommandProtocol(asyncio.Protocol):
 
 
 # ==========================
-# MODBUS RTU-over-TCP (SMG-II) (ваш код без изменений)
+# MODBUS RTU-over-TCP (SMG-II)
 # ==========================
 
 UNIT_ID = 1  # для SMG-II обычно 1
 
 
 def i16(v: int) -> int:
+    """Преобразование 16-битного регистра в signed int."""
     return v - 65536 if v >= 32768 else v
 
 
 def modbus_crc16(data: bytes) -> int:
+    """Классический CRC16 Modbus (poly 0xA001, init 0xFFFF)."""
     crc = 0xFFFF
     for b in data:
         crc ^= b
@@ -683,25 +407,34 @@ async def _read_modbus_block(
     unit_id: int = UNIT_ID,
     timeout: float = 30.0,
 ) -> list[int]:
+    """
+    Async Modbus RTU-over-TCP:
+      • открываем TCP-сокет
+      • шлём RTU-запрос 0x03
+      • читаем ответ
+    НИГДЕ не используется time.sleep и pyserial.
+    """
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(host, port), timeout=timeout
     )
 
     try:
+        # Собираем запрос: [id][func=3][addr_hi][addr_lo][cnt_hi][cnt_lo][crc_lo][crc_hi]
         req = bytearray()
         req.append(unit_id & 0xFF)
-        req.append(3)
+        req.append(3)  # Read Holding Registers
         req.append((start >> 8) & 0xFF)
         req.append(start & 0xFF)
         req.append((count >> 8) & 0xFF)
         req.append(count & 0xFF)
         crc = modbus_crc16(bytes(req))
-        req.append(crc & 0xFF)
-        req.append((crc >> 8) & 0xFF)
+        req.append(crc & 0xFF)        # CRC low
+        req.append((crc >> 8) & 0xFF)  # CRC high
 
         writer.write(req)
         await writer.drain()
 
+        # Читаем первые 2 байта: id, func
         header2 = await asyncio.wait_for(reader.readexactly(2), timeout=timeout)
         if len(header2) < 2:
             raise Exception("Short Modbus header")
@@ -710,11 +443,13 @@ async def _read_modbus_block(
         if uid != unit_id:
             raise Exception(f"Unexpected unit id: {uid}")
 
+        # Ошибка Modbus: func | 0x80 и один байт кода ошибки
         if func & 0x80:
             exc_and_crc = await asyncio.wait_for(reader.readexactly(3), timeout=timeout)
             exc_code = exc_and_crc[0]
             raise Exception(f"Modbus exception {exc_code}")
 
+        # Нормальный ответ: [id][func][byte_count][data...][crc_lo][crc_hi]
         bc_bytes = await asyncio.wait_for(reader.readexactly(1), timeout=timeout)
         byte_count = bc_bytes[0]
 
@@ -757,7 +492,19 @@ async def _write_modbus_single_register(
     unit_id: int = UNIT_ID,
     timeout: float = 30.0,
 ) -> dict:
+    """
+    Запись одного Holding-регистра Modbus RTU-over-TCP.
+    Сначала пробуем func = 0x06 (Write Single Register),
+    если инвертор молчит/рвёт соединение — пробуем func = 0x10 (Write Multiple, qty=1).
+
+    ВО ВСЕХ СЛУЧАЯХ:
+    - не кидаем исключения наружу, возвращаем {'status': 'OK'} или {'error': '...'}
+    """
+
     async def _send_once(func_code: int) -> dict:
+        reader: asyncio.StreamReader
+        writer: asyncio.StreamWriter
+
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout=timeout
         )
@@ -769,26 +516,35 @@ async def _write_modbus_single_register(
             req.append(address & 0xFF)
 
             if func_code == 0x06:
+                # Write Single Register
                 req.append((value >> 8) & 0xFF)
                 req.append(value & 0xFF)
             elif func_code == 0x10:
-                req.append(0x00)
-                req.append(0x01)
-                req.append(0x02)
+                # Write Multiple Registers (qty = 1)
+                req.append(0x00)  # qty_hi
+                req.append(0x01)  # qty_lo
+                req.append(0x02)  # byte_count
                 req.append((value >> 8) & 0xFF)
                 req.append(value & 0xFF)
             else:
                 raise ValueError(f"Unsupported func_code {func_code}")
 
             crc = modbus_crc16(bytes(req))
-            req.append(crc & 0xFF)
-            req.append((crc >> 8) & 0xFF)
+            req.append(crc & 0xFF)         # CRC lo
+            req.append((crc >> 8) & 0xFF)  # CRC hi
 
             writer.write(req)
             await writer.drain()
 
+            # Ответ RTU:
+            #   [id][func][addr_hi][addr_lo][val_hi/qty_hi][val_lo/qty_lo][crc_lo][crc_hi]
+            # т.е. всего 8 байт
             resp = await asyncio.wait_for(reader.readexactly(8), timeout=timeout)
 
+            if len(resp) != 8:
+                raise Exception(f"Short Modbus write response: {len(resp)} bytes")
+
+            # CRC проверяем
             body = resp[:-2]
             crc_lo, crc_hi = resp[-2], resp[-1]
             recv_crc = crc_lo | (crc_hi << 8)
@@ -804,6 +560,7 @@ async def _write_modbus_single_register(
                 exc_code = body[2]
                 raise Exception(f"Modbus exception in write: {exc_code}")
 
+            # Адрес можно дополнительно сверить, но это уже не критично
             return {"status": "OK", "func": func_code}
 
         finally:
@@ -813,16 +570,26 @@ async def _write_modbus_single_register(
             except Exception:
                 pass
 
+    # Сначала пробуем 0x06
     try:
         return await _send_once(0x06)
     except Exception as e1:
+        # Если Elfin/инвертор молчит на 0x06 — пробуем 0x10
         try:
             return await _send_once(0x10)
         except Exception as e2:
-            return {"error": f"modbus write failed (0x06: {e1}, 0x10: {e2})"}
-
+            return {
+                "error": f"modbus write failed (0x06: {e1}, 0x10: {e2})"
+            }
 
 async def read_modbus_snapshot_async(host: str, port: int) -> tuple[dict, dict]:
+    """
+    Считывает два блока:
+      • 201–231: сенсоры
+      • 300–337: конфигурация
+    Через чистый asyncio Modbus RTU-over-TCP.
+    """
+    # --- блок 201–231 (сенсоры) ---
     block_200 = await _read_modbus_block(host, port, 201, 31)
 
     def R200(addr: int) -> int:
@@ -864,7 +631,8 @@ async def read_modbus_snapshot_async(host: str, port: int) -> tuple[dict, dict]:
         "temp_inverter": R200(227),
     }
 
-    block_300 = await _read_modbus_block(host, port, 300, 38, UNIT_ID, 30)  # TODO: change
+    # --- блок 300–337 (конфиг) ---
+    block_300 = await _read_modbus_block(host, port, 300, 38, UNIT_ID, 30) # TODO: change
 
     def R300(addr: int) -> int:
         return block_300[addr - 300]
@@ -902,10 +670,12 @@ async def read_modbus_snapshot_async(host: str, port: int) -> tuple[dict, dict]:
 
 
 def modbus_to_qpigs(s: dict) -> dict:
-    bus_voltage = 400
+    """Преобразует данные MODBUS (sensors) в структуру, максимально похожую на decode_qpigs()."""
+    bus_voltage = 400  # у SMG-II нет отдельного bus voltage
 
-    battery_charging_current = max(0, int(s["battery_current"]))
-    battery_discharge_current = max(0, int(-s["battery_current"]))
+    # у тебя тут знак уже подогнан под SMG, я оставляю как было
+    battery_charging_current = max(0, int(s["battery_current"]))   # заряд +
+    battery_discharge_current = max(0, int(-s["battery_current"]))  # разряд +
 
     pv_current_int = s["pv_current"]
     pv_voltage_value = s["pv_voltage"]
@@ -916,13 +686,14 @@ def modbus_to_qpigs(s: dict) -> dict:
         "ac_output_frequency": f"{s['output_frequency']:.2f}",
         "output_apparent_power": f"{abs(s['output_active_power']):04d}",
         "output_active_power": f"{abs(s['output_active_power']):04d}",
+
         "load_percent": f"{s['load_percent']:03d}",
         "bus_voltage": f"{bus_voltage}",
         "battery_voltage": f"{s['battery_voltage']:.2f}",
         "battery_charging_current": f"{battery_charging_current:03d}",
-        "battery_capacity": "100",
-        "inverter_heat_sink_temperature": f"{s['temp_inverter']:.1f}",
-        "inverter_dcdc_module_temperature": f"{s['temp_dcdc']:.1f}",
+        "battery_capacity": "100",  # SOC можно позже взять из отдельного регистра
+        "inverter_heat_sink_temperature": f"{s['temp_inverter']:.1f}", ### or temp_dcdc
+        "inverter_dcdc_module_temperature": f"{s['temp_dcdc']:.1f}", ### or temp_dcdc
         "pv_input_current": f"{pv_current_int:.1f}",
         "pv_input_voltage": f"{pv_voltage_value:.1f}",
         "scc_battery_voltage": f"{s['battery_voltage']:.2f}",
@@ -937,22 +708,31 @@ def modbus_to_qpigs(s: dict) -> dict:
 
 
 def modbus_to_qpiri(c: dict) -> dict:
-    ac_range_name = ACInputVoltageRange.UPS.name if c["input_voltage_range"] == 1 else ACInputVoltageRange.Appliance.name
+    """Преобразует данные MODBUS (config) в структуру, максимально похожую на decode_qpiri()."""
+    ac_range_name = (
+        ACInputVoltageRange.UPS.name
+        if c["input_voltage_range"] == 1
+        else ACInputVoltageRange.Appliance.name
+    )
 
     OUTPUT_PRIORITY = {
-        0: OutputSourcePriorityVoltronic.UtilityFirst.name,
-        1: OutputSourcePriorityVoltronic.SolarFirst.name,
-        2: OutputSourcePriorityVoltronic.SBU.name,
+        0: OutputSourcePriority.UtilityFirst.name,
+        1: OutputSourcePriority.SolarFirst.name,
+        2: OutputSourcePriority.SBU.name,
     }
-    output_priority = OUTPUT_PRIORITY.get(c["output_priority"], OutputSourcePriorityVoltronic.UtilityFirst.name)
+    output_priority = OUTPUT_PRIORITY.get(
+        c["output_priority"], OutputSourcePriority.UtilityFirst.name
+    )
 
     CHARGER_PRIORITY = {
-        0: ChargerSourcePriorityVoltronic.UtilityFirst.name,
-        1: ChargerSourcePriorityVoltronic.SolarFirst.name,
-        2: ChargerSourcePriorityVoltronic.SolarAndUtility.name,
-        3: ChargerSourcePriorityVoltronic.OnlySolar.name,
+        0: ChargerSourcePriority.UtilityFirst.name,
+        1: ChargerSourcePriority.SolarFirst.name,
+        2: ChargerSourcePriority.SolarAndUtility.name,
+        3: ChargerSourcePriority.OnlySolar.name,
     }
-    charger_priority = CHARGER_PRIORITY.get(c["battery_charging_priority"], ChargerSourcePriorityVoltronic.UtilityFirst.name)
+    charger_priority = CHARGER_PRIORITY.get(
+        c["battery_charging_priority"], ChargerSourcePriority.UtilityFirst.name
+    )
 
     return {
         "rated_grid_voltage": "230.0",
@@ -987,7 +767,7 @@ def modbus_to_qpiri(c: dict) -> dict:
 
 
 # ==========================
-# ГЛАВНАЯ ФУНКЦИЯ ЧТЕНИЯ (UPDATED)
+# ГЛАВНАЯ ФУНКЦИЯ ЧТЕНИЯ
 # ==========================
 
 
@@ -995,15 +775,14 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) 
     """
     Универсальный доступ к инвертору.
 
-    • device = "modbus://host:port"  → SMG-II по Modbus RTU-over-TCP.
-    • device = "tcp://host:port"    → Voltronic/Axpert/SUNPOLO через ELFIN/TCP.
-    • device = "/dev/ttyUSB0"       → Voltronic по UART.
+    • device = "modbus://host:port"  → SMG-II по Modbus RTU-over-TCP, данные мимикрируют под QPIGS/QPIRI/QMOD.
+    • device = "tcp://host:port"    → классический Voltronic через Elfin (ASCII + CRC).
+    • device = "/dev/ttyUSB0"       → классический Voltronic по UART (ASCII + CRC).
 
-    Для SUNPOLO6K используйте команды:
-      '^P005GS', '^P007PIRI', '^P006MOD', 'QMN', ...
+    Возвращает dict, совместимый с decode_qpigs / decode_qpiri / decode_qmod.
     """
 
-    command = command_str.strip()
+    command = command_str.upper()
 
     # ---- Виртуальные QPIGS/QPIRI/QMOD поверх Modbus (SMG-II) ----
     if device.startswith("modbus://"):
@@ -1019,55 +798,50 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) 
         except Exception:
             return {}
 
-        cmd_upper = command.upper()
-        if cmd_upper == "QPIGS":
+        if command == "QPIGS":
             return modbus_to_qpigs(sensors)
-        if cmd_upper == "QPIRI":
+        if command == "QPIRI":
             return modbus_to_qpiri(config)
-        if cmd_upper == "QMOD":
+        if command == "QMOD":
             om = (sensors.get("operation_mode") or "").lower()
             if any(x in om for x in ("mains", "bypass", "charging")):
-                mode = OperatingModeVoltronic.Line
+                mode = OperatingMode.Line
             elif any(x in om for x in ("off-grid", "offgrid", "off grid")):
-                mode = OperatingModeVoltronic.Battery
+                mode = OperatingMode.Battery
             elif "standby" in om:
-                mode = OperatingModeVoltronic.Standby
+                mode = OperatingMode.Standby
             elif "fault" in om:
-                mode = OperatingModeVoltronic.Fault
+                mode = OperatingMode.Fault
             else:
-                mode = OperatingModeVoltronic.PowerOn
+                mode = OperatingMode.PowerOn
             return {"operating_mode": mode}
 
+        # на всякий случай — сырые структуры
         return {"sensors": sensors, "config": config}
 
-    # ---- TCP/Serial ----
+    # ---- Старый путь: Elfin TCP / Serial, всё как было ----
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
     transport: asyncio.Transport | None = None
 
     def on_response(data, err):
         if not fut.done():
-            fut.set_result(None if err else data)
+            if err:
+                fut.set_result(None)
+            else:
+                fut.set_result(data)
 
     try:
         if device.startswith("tcp://"):
             _, addr = device.split("tcp://", 1)
             host, port_str = addr.split(":")
             port = int(port_str)
-
-            # Определяем: SUNPOLO или классический Voltronic
-            # SUNPOLO-команды обычно начинаются с '^P' или равны 'QMN'
-            is_sunpolo = command.upper().startswith("^P") or command.upper() in {"QMN"}
-
-            proto_cls = SunpoloTCPProtocol if is_sunpolo else VoltronicTCPProtocol
-
             transport, _ = await loop.create_connection(
-                lambda: proto_cls(command, on_response),
+                lambda: ElfinTCPProtocol(command, on_response),
                 host,
                 port,
             )
         else:
-            # Serial оставляем legacy (Voltronic), но при желании можно также SUNPOLO по UART
             transport, _ = await serial_asyncio.create_serial_connection(
                 loop,
                 lambda: SerialCommandProtocol(command, on_response),
@@ -1092,21 +866,22 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) 
                 return parsed or {}
             except Exception:
                 return {}
-        return {}
+        else:
+            return {}
     finally:
         if transport:
             transport.close()
 
 
 # ==========================
-# УПРАВЛЯЮЩИЕ КОМАНДЫ (оставил как было)
+# УПРАВЛЯЮЩИЕ КОМАНДЫ Voltronic / Modbus
 # ==========================
+
 
 async def set_direct_data(device: str, command_str: str, timeout: float = 30.0) -> dict:
     """
-    Отправляет управляющую команду на классический Voltronic через TCP.
-    Для SUNPOLO set-команды в доке начинаются с '^S...' (CRC16 + CR) — можно использовать этот же метод,
-    просто передайте '^S...' как command_str.
+    Отправляет управляющую команду (PBATC, POP, PCP, ...) на классический Voltronic через TCP.
+    Для Modbus/SMG-II управление делается через регистры в set_* методах.
     """
     if device.startswith("tcp://"):
         _, data = device.split("tcp://", 1)
@@ -1124,24 +899,19 @@ async def set_direct_data(device: str, command_str: str, timeout: float = 30.0) 
         await writer.drain()
 
         try:
-            data = await asyncio.wait_for(reader.read(256), timeout=timeout)
+            data = await asyncio.wait_for(reader.read(128), timeout=timeout)
         except asyncio.TimeoutError:
             return {"error": "timeout waiting for ACK/NAK"}
 
         writer.close()
         await writer.wait_closed()
 
-        # Для SUNPOLO ответ может быть '^1'/'^0' + CRC bytes; в ASCII может выглядеть странно.
         resp = data.decode(errors="ignore").strip()
 
         if "ACK" in resp:
             return {"status": "ACK"}
         elif "NAK" in resp:
             return {"status": "NAK"}
-        elif resp.startswith("^1"):
-            return {"status": "OK"}
-        elif resp.startswith("^0"):
-            return {"status": "FAIL"}
         elif not resp:
             return {"error": "empty response"}
         else:
@@ -1149,6 +919,226 @@ async def set_direct_data(device: str, command_str: str, timeout: float = 30.0) 
 
     except Exception as e:
         return {"error": str(e)}
+
+
+# === Enums для текстовых/выборных настроек (классический Voltronic) ===
+
+
+class BatteryTypeSetting(Enum):
+    AGM = "PBT00"
+    FLOODED = "PBT01"
+    USER = "PBT02"
+    LIFEP04 = "PBT03"  # если поддерживается
+
+
+class OutputSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "POP00"
+    SBU_PRIORITY = "POP01"
+    SOLAR_FIRST = "POP02"
+
+
+class ChargeSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "PCP00"
+    SOLAR_FIRST = "PCP01"
+    SOLAR_AND_UTILITY = "PCP02"
+
+
+# ==== ОБНОВЛЁННЫЕ set_* С ПОДДЕРЖКОЙ modbus:// ====
+
+
+async def set_battery_type(device: str, battery_type: BatteryTypeSetting) -> dict:
+    """
+    У Voltronic — PB Txx команда.
+    Для SMG-II по Modbus сейчас безопасно вернуть ошибку, т.к. регистр типа батареи не известен.
+    """
+    if device.startswith("modbus://"):
+        return {"error": "set_battery_type is not implemented for modbus devices"}
+
+    # классический Voltronic по TCP
+    return await set_direct_data(device, battery_type.value)
+
+
+async def set_output_source_priority(device: str, mode: OutputSourcePrioritySetting) -> dict:
+    """
+    Voltronic: POPxx
+    SMG-II (modbus://): регистр 301 (output_priority)
+        0 = UtilityFirst
+        1 = SolarFirst
+        2 = SBU
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        mapping = {
+            OutputSourcePrioritySetting.UTILITY_FIRST: 0,
+            OutputSourcePrioritySetting.SOLAR_FIRST: 1,
+            OutputSourcePrioritySetting.SBU_PRIORITY: 2,
+        }
+        value = mapping.get(mode)
+        if value is None:
+            return {"error": f"mode {mode} is not mappable to SMG output_priority"}
+
+        return await _write_modbus_single_register(host, port, 301, value)
+
+    # классический Voltronic
+    return await set_direct_data(device, mode.value)
+
+
+async def set_charge_source_priority(device: str, mode: ChargeSourcePrioritySetting) -> dict:
+    """
+    Voltronic: PCPxx
+    SMG-II (modbus://): регистр 331 (battery_charging_priority)
+        0 = UtilityFirst
+        1 = SolarFirst
+        2 = SolarAndUtility
+        (3 = OnlySolar — не покрывается текущим Enum)
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        mapping = {
+            ChargeSourcePrioritySetting.UTILITY_FIRST: 0,
+            ChargeSourcePrioritySetting.SOLAR_FIRST: 1,
+            ChargeSourcePrioritySetting.SOLAR_AND_UTILITY: 2,
+        }
+        value = mapping.get(mode)
+        if value is None:
+            return {"error": f"mode {mode} is not mappable to SMG battery_charging_priority"}
+
+        return await _write_modbus_single_register(host, port, 331, value)
+
+    # классический Voltronic
+    return await set_direct_data(device, mode.value)
+
+
+async def set_battery_bulk_voltage(device: str, voltage: float) -> dict:
+    """
+    Voltronic: PBAVxx.xx
+    SMG-II (modbus://): регистр 324 (max_charge_voltage), масштаб ×10
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        reg_value = int(round(voltage * 10.0))
+        reg_value = max(0, min(0xFFFF, reg_value))
+        return await _write_modbus_single_register(host, port, 324, reg_value)
+
+    cmd = f"PBAV{voltage:.2f}"
+    return await set_direct_data(device, cmd)
+
+
+async def set_battery_float_voltage(device: str, voltage: float) -> dict:
+    """
+    Voltronic: PBFVxx.xx
+    SMG-II (modbus://): регистр 325 (float_charge_voltage), масштаб ×10.
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        reg_value = int(round(voltage * 10.0))
+        reg_value = max(0, min(0xFFFF, reg_value))
+        return await _write_modbus_single_register(host, port, 325, reg_value)
+
+    cmd = f"PBFV{voltage:.2f}"
+    return await set_direct_data(device, cmd)
+
+
+async def set_rated_battery_voltage(device: str, voltage: int) -> dict:
+    """
+    Voltronic: PBRVxx
+    Для SMG-II пока нет явного регистра "rated_battery_voltage" в карте, поэтому не трогаем.
+    """
+    if device.startswith("modbus://"):
+        return {"error": "set_rated_battery_voltage is not implemented for modbus devices"}
+
+    cmd = f"PBRV{voltage}"
+    return await set_direct_data(device, cmd)
+
+
+async def set_max_combined_charge_current(device: str, amps: int) -> dict:
+    """
+    Voltronic: MCHGCxxx
+    SMG-II (modbus://): регистра явного "combined" нет, используем 332 (max_charging_current), ×10.
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        reg_value = int(round(amps * 10.0))
+        reg_value = max(0, min(0xFFFF, reg_value))
+        return await _write_modbus_single_register(host, port, 332, reg_value)
+
+    cmd = f"MCHGC{amps:03d}"
+    return await set_direct_data(device, cmd)
+
+
+async def set_battery_charge_current(device: str, amps: int) -> dict:
+    """
+    Voltronic: PBATCxxx
+    SMG-II (modbus://): используем тот же 332 (max_charging_current), ×10.
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": "invalid modbus device string"}
+
+        reg_value = int(round(amps * 10.0))
+        reg_value = max(0, min(0xFFFF, reg_value))
+        return await _write_modbus_single_register(host, port, 332, reg_value)
+
+    cmd = f"PBATC{amps:03d}"
+    return await set_direct_data(device, cmd)
+
+
+async def set_max_utility_charge_current(device: str, amps: int) -> dict:
+    """
+    Установка максимального тока заряда от сети (AC charging current).
+
+    • Для классического Voltronic (tcp:// или /dev/ttyUSB0) — команда MUCHGCxxx.
+    • Для SMG-II по Modbus (modbus://host:port) — запись в регистр 333 (в десятых ампера).
+    """
+    if device.startswith("modbus://"):
+        try:
+            _, addr = device.split("modbus://", 1)
+            host, port_str = addr.split(":")
+            port = int(port_str)
+        except Exception:
+            return {"error": f"invalid modbus device: {device}"}
+
+        # Регистр 333 хранит значение в 0.1 A → умножаем на 10
+        reg_value = int(amps * 10)
+        return await _write_modbus_single_register(host, port, 333, reg_value)
+    else:
+        # Старый Voltronic-путь
+        cmd = f"MUCHGC{amps:03d}"
+        return await set_direct_data(device, cmd)
 
 
 @unique
@@ -1171,6 +1161,7 @@ class DeviceStatusBitsB10B8(IntEnum):
 
 
 def _extract_bits(raw: str, count: int) -> str:
+    """Очищает строку, оставляя только 0/1, и возвращает ровно count бит."""
     bits = [c for c in (raw or "") if c in "01"][:count]
     return "".join(bits).rjust(count, "0")
 
