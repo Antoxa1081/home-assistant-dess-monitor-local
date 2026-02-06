@@ -8,7 +8,44 @@ import serial_asyncio_fast as serial_asyncio
 # ==========================
 # ВСПОМОГАТЕЛЬНЫЕ ДЕКОДЕРЫ
 # ==========================
+# ==========================
+# COMPAT LAYER FOR HA SELECTS
+# ==========================
+from enum import Enum
 
+class OutputSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "POP00"
+    SBU_PRIORITY = "POP01"
+    SOLAR_FIRST = "POP02"
+
+class ChargeSourcePrioritySetting(Enum):
+    UTILITY_FIRST = "PCP00"
+    SOLAR_FIRST = "PCP01"
+    SOLAR_AND_UTILITY = "PCP02"
+
+async def set_output_source_priority(device: str, mode: OutputSourcePrioritySetting) -> dict:
+    """
+    Backward-compatible API for HA selects.
+    Voltronic: POPxx
+    SUNPOLO: если ваш протокол поддерживает POP/PCP — тоже сработает (CRC16+CR),
+             иначе вернёт NAK/FAIL в set_direct_data.
+    """
+    return await set_direct_data(device, mode.value)
+
+async def set_charge_source_priority(device: str, mode: ChargeSourcePrioritySetting) -> dict:
+    """
+    Voltronic: PCPxx
+    SUNPOLO: аналогично — зависит от поддержки команды в вашей прошивке.
+    """
+    return await set_direct_data(device, mode.value)
+
+async def set_max_utility_charge_current(device: str, amps: int) -> dict:
+    """
+    Voltronic: MUCHGCxxx
+    SUNPOLO: если поддерживает MUCHGC — ок.
+    """
+    cmd = f"MUCHGC{int(amps):03d}"
+    return await set_direct_data(device, cmd)
 
 def decode_ascii_response(hex_string: str) -> str:
     """Преобразовать строку 'AA BB CC' в ASCII."""
