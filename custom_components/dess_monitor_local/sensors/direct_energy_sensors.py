@@ -291,7 +291,8 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         last_extra = await self.async_get_last_extra_data()
         if last_extra is not None:
             data = last_extra.as_dict()
-            self._attr_native_value = float(data.get("native_value") or 100.0)
+            restored_value = data.get("native_value")
+            self._attr_native_value = float(restored_value) if restored_value is not None else 100.0
             self._accumulated_energy_wh = float(data.get("accumulated_energy_wh", 0))
         else:
             self._attr_native_value = 100.0
@@ -324,22 +325,52 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._update_battery_capacity_from_state(state)
 
     def _update_battery_capacity_from_state(self, state):
-        if state is None:
+        # Ёмкость ещё не доступна (например, number-сущность не восстановилась
+        # на старте HA). Не трогаем восстановленный _attr_native_value и
+        # _accumulated_energy_wh — сенсор просто станет недоступен, пока
+        # ёмкость не появится.
+        if state is None or state.state in ("unknown", "unavailable", None):
             self._battery_capacity_wh = None
-            self._attr_native_value = None
             self.async_write_ha_state()
             return
         try:
             value = float(state.state)
-            if value <= 0:
-                self._battery_capacity_wh = None
-                self._attr_native_value = None
-            else:
-                self._battery_capacity_wh = value
-                self._accumulated_energy_wh = value
         except (ValueError, TypeError):
             self._battery_capacity_wh = None
-            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
+
+        if value <= 0:
+            self._battery_capacity_wh = None
+            self.async_write_ha_state()
+            return
+
+        old_capacity = self._battery_capacity_wh
+        self._battery_capacity_wh = value
+
+        if old_capacity is None:
+            # Ёмкость появилась впервые (или после restart). Сохраняем SoC в
+            # процентах: пересчитываем _accumulated_energy_wh из restored SoC,
+            # чтобы не потерять значение после перезапуска HA.
+            if self._attr_native_value is not None:
+                soc_fraction = max(0.0, min(1.0, float(self._attr_native_value) / 100.0))
+                self._accumulated_energy_wh = soc_fraction * value
+            else:
+                self._accumulated_energy_wh = value
+                self._attr_native_value = 100.0
+        else:
+            # Пользователь изменил ёмкость батареи — сохраняем процент SoC
+            # (пропорционально пересчитываем накопленную энергию).
+            if old_capacity > 0:
+                soc_fraction = self._accumulated_energy_wh / old_capacity
+            elif self._attr_native_value is not None:
+                soc_fraction = float(self._attr_native_value) / 100.0
+            else:
+                soc_fraction = 1.0
+            soc_fraction = max(0.0, min(1.0, soc_fraction))
+            self._accumulated_energy_wh = soc_fraction * value
+            self._attr_native_value = soc_fraction * 100.0
+
         self.async_write_ha_state()
 
     def get_bulk_charging_voltage(self) -> float | None:
