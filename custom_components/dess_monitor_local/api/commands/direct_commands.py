@@ -1055,6 +1055,81 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) 
 # ==========================
 
 
+# ---- Enum → agent-string translation tables -------------------------------
+#
+# The agent uses the canonical decoder-side names ("UtilityFirst", "SBU",
+# "SolarFirst", ...) because that's what its snapshot `raw` dict echoes
+# back. The Python enums in this file historically used UPPER_SNAKE
+# identifiers with POP/PCP codes as values — they don't match the agent's
+# semantic strings, so we translate explicitly.
+#
+# Keep this in sync with `settings-registry.ts` in the agent repo — the
+# allowed-enum lists on both sides must agree or the agent will 400.
+
+_OUTPUT_PRIORITY_TO_AGENT: dict = {
+    # Maps by enum identity so a typo in the symbol name fails at import.
+}
+_CHARGER_PRIORITY_TO_AGENT: dict = {}
+
+
+def _init_agent_enum_tables() -> None:
+    """Populate the translation tables once at import time. Kept in a
+    function so the enum classes (defined later in the file) are in
+    scope when this runs — we call it at module bottom."""
+    _OUTPUT_PRIORITY_TO_AGENT.update({
+        OutputSourcePrioritySetting.UTILITY_FIRST: "UtilityFirst",
+        OutputSourcePrioritySetting.SBU_PRIORITY: "SBU",
+        OutputSourcePrioritySetting.SOLAR_FIRST: "SolarFirst",
+    })
+    _CHARGER_PRIORITY_TO_AGENT.update({
+        ChargeSourcePrioritySetting.UTILITY_FIRST: "UtilityFirst",
+        ChargeSourcePrioritySetting.SOLAR_FIRST: "SolarFirst",
+        ChargeSourcePrioritySetting.SOLAR_AND_UTILITY: "SolarAndUtility",
+    })
+
+
+async def set_direct_data_agent(
+    device: str, setting_key: str, value, timeout: float = 30.0
+) -> dict:
+    """
+    Отправляет семантическую команду на локальный solar-system-agent.
+
+    Агент сам знает транспорт своего логгера (tcp:// vs modbus://) и
+    переводит (setting_key, value) в нужный wire-формат. Возвращает dict,
+    формат которого матчит remaining Python `set_*` функции:
+
+      {"ok": True,  "rawResponse": "ACK",  "durationMs": 420}
+      {"ok": False, "error": "...",         "code": "validation" | "device_nak" | ...}
+
+    Параметр `value` — строка (enum) или число (voltage/current), агент
+    валидирует тип и диапазон.
+    """
+    try:
+        host, port, provider_device_id = _parse_agent_uri(device)
+    except ValueError as err:
+        return {"ok": False, "error": f"invalid agent URI: {err}"}
+
+    url = f"http://{host}:{port}/devices/{provider_device_id}/settings"
+    payload = {"key": setting_key, "value": value}
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as session:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json(content_type=None)
+                # Агент возвращает `ok:true/false` в теле. Статус просто
+                # подсказывает класс ошибки (400 vs 422 vs 502) — в dict
+                # мы его не транслируем, полагаемся на тело.
+                if not isinstance(data, dict):
+                    return {
+                        "ok": False,
+                        "error": f"agent returned non-dict body (HTTP {resp.status})",
+                    }
+                return data
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        return {"ok": False, "error": f"agent unreachable: {err}"}
+
+
 async def set_direct_data(device: str, command_str: str, timeout: float = 30.0) -> dict:
     """
     Отправляет управляющую команду (PBATC, POP, PCP, ...) на классический Voltronic через TCP.
@@ -1142,7 +1217,16 @@ async def set_output_source_priority(device: str, mode: OutputSourcePrioritySett
         0 = UtilityFirst
         1 = SolarFirst
         2 = SBU
+    Agent (agent://): семантический POST на /devices/:id/settings.
     """
+    if device.startswith("agent://"):
+        agent_value = _OUTPUT_PRIORITY_TO_AGENT.get(mode)
+        if agent_value is None:
+            return {"ok": False, "error": f"no agent mapping for {mode}"}
+        return await set_direct_data_agent(
+            device, "output_source_priority", agent_value
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1174,7 +1258,16 @@ async def set_charge_source_priority(device: str, mode: ChargeSourcePrioritySett
         1 = SolarFirst
         2 = SolarAndUtility
         (3 = OnlySolar — не покрывается текущим Enum)
+    Agent (agent://): семантический POST.
     """
+    if device.startswith("agent://"):
+        agent_value = _CHARGER_PRIORITY_TO_AGENT.get(mode)
+        if agent_value is None:
+            return {"ok": False, "error": f"no agent mapping for {mode}"}
+        return await set_direct_data_agent(
+            device, "charger_source_priority", agent_value
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1202,7 +1295,13 @@ async def set_battery_bulk_voltage(device: str, voltage: float) -> dict:
     """
     Voltronic: PBAVxx.xx
     SMG-II (modbus://): регистр 324 (max_charge_voltage), масштаб ×10
+    Agent (agent://): семантический POST.
     """
+    if device.startswith("agent://"):
+        return await set_direct_data_agent(
+            device, "bulk_charging_voltage", float(voltage)
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1223,7 +1322,13 @@ async def set_battery_float_voltage(device: str, voltage: float) -> dict:
     """
     Voltronic: PBFVxx.xx
     SMG-II (modbus://): регистр 325 (float_charge_voltage), масштаб ×10.
+    Agent (agent://): семантический POST.
     """
+    if device.startswith("agent://"):
+        return await set_direct_data_agent(
+            device, "float_charging_voltage", float(voltage)
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1256,7 +1361,13 @@ async def set_max_combined_charge_current(device: str, amps: int) -> dict:
     """
     Voltronic: MCHGCxxx
     SMG-II (modbus://): регистра явного "combined" нет, используем 332 (max_charging_current), ×10.
+    Agent (agent://): семантический POST.
     """
+    if device.startswith("agent://"):
+        return await set_direct_data_agent(
+            device, "max_charging_current", int(amps)
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1277,7 +1388,14 @@ async def set_battery_charge_current(device: str, amps: int) -> dict:
     """
     Voltronic: PBATCxxx
     SMG-II (modbus://): используем тот же 332 (max_charging_current), ×10.
+    Agent (agent://): mapped to `max_charging_current` семантической настройке
+    (агент сам шлёт MCHGC для Voltronic и пишет 332 для Modbus).
     """
+    if device.startswith("agent://"):
+        return await set_direct_data_agent(
+            device, "max_charging_current", int(amps)
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1298,9 +1416,15 @@ async def set_max_utility_charge_current(device: str, amps: int) -> dict:
     """
     Установка максимального тока заряда от сети (AC charging current).
 
-    • Для классического Voltronic (tcp:// или /dev/ttyUSB0) — команда MUCHGCxxx.
-    • Для SMG-II по Modbus (modbus://host:port) — запись в регистр 333 (в десятых ампера).
+    • Voltronic (tcp:// или /dev/ttyUSB0) — команда MUCHGCxxx.
+    • SMG-II (modbus://host:port) — запись в регистр 333 (в десятых ампера).
+    • Agent (agent://) — семантический POST.
     """
+    if device.startswith("agent://"):
+        return await set_direct_data_agent(
+            device, "max_utility_charging_current", int(amps)
+        )
+
     if device.startswith("modbus://"):
         try:
             _, addr = device.split("modbus://", 1)
@@ -1367,3 +1491,8 @@ def parse_device_status_bits_b10_b8(raw: str) -> dict:
         "charging_ac_active": bool(value & DeviceStatusBitsB10B8.CHARGING_AC_ACTIVE),
         "_raw_b10_b8": bits,
     }
+
+
+# Populate HA-enum → agent-string tables now that both enums exist. Must
+# come after the enum class definitions.
+_init_agent_enum_tables()
