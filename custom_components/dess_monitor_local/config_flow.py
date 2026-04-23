@@ -28,6 +28,56 @@ async def list_serial_ports() -> list[str]:
     return [port.device for port in ports]
 
 
+def _build_device_uri(
+    device: str | None,
+    host: str | None,
+    port: int,
+    agent_device_id: str,
+) -> str:
+    """Assemble the stored `device` field from form inputs.
+
+    Precedence:
+      1. `agent_device_id` filled → agent://host:port/providerDeviceId
+      2. `host` filled            → host:port    (Elfin TCP / Modbus path)
+      3. otherwise                → serial port selection
+
+    The agent branch requires host:port just like the TCP branch — we
+    reuse the same two inputs so the form stays compact.
+    """
+    if agent_device_id and host:
+        return f"agent://{host}:{port}/{agent_device_id}"
+    if host:
+        return f"{host}:{port}"
+    return device or ""
+
+
+def _parse_device_uri(device: str) -> tuple[str, int, str]:
+    """Best-effort split of the stored `device` string into (host, port,
+    agent_device_id) for pre-filling the edit form.
+
+    Returns blanks for fields that don't apply to the detected shape.
+    """
+    if not device:
+        return "", 8899, ""
+    if device.startswith("agent://"):
+        # Reuse urlparse by poking at the non-standard scheme — Python
+        # still extracts hostname/port/path correctly.
+        from urllib.parse import urlparse
+        parsed = urlparse(device)
+        if parsed.hostname and parsed.port:
+            return parsed.hostname, parsed.port, parsed.path.lstrip("/")
+        return "", 8899, ""
+    if ":" in device and not device.startswith("/"):
+        host_part, port_part = device.rsplit(":", 1)
+        try:
+            return host_part, int(port_part), ""
+        except ValueError:
+            return host_part, 8899, ""
+    # Serial path — return device value verbatim via the `device` arg of
+    # the caller; host/port defaults keep the form valid.
+    return "", 8899, ""
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
@@ -62,7 +112,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_select_devices(self, user_input=None):
-        """Шаг выбора способа подключения: serial или TCP (Elfin/SMG)."""
+        """Шаг выбора способа подключения: serial, TCP (Elfin/SMG) или local agent."""
         device_ports = await list_serial_ports()
         errors: dict[str, str] = {}
 
@@ -70,14 +120,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             device = user_input.get("device")
             host = user_input.get("host")
             port = user_input.get("port", 8899)
+            agent_device_id = (user_input.get("agent_device_id") or "").strip()
 
             if not device and not host:
                 errors["base"] = "select_or_enter"
             else:
                 # Сохраняем единое поле device:
-                #   - либо /dev/ttyUSB0
-                #   - либо "10.0.0.106:17824"
-                device_value = f"{host}:{port}" if host else device
+                #   - agent://host:port/providerDeviceId — локальный агент (если задан agent_device_id)
+                #   - /dev/ttyUSB0                       — serial
+                #   - host:port                          — Elfin TCP / Modbus
+                device_value = _build_device_uri(
+                    device, host, port, agent_device_id
+                )
 
                 return self.async_create_entry(
                     title=self._info.get("title", "Inverter") if self._info else "Inverter",
@@ -101,11 +155,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }),
                 vol.Optional("host"): cv.string,
                 vol.Optional("port", default=8899): cv.port,
+                # If filled, host/port point at the solar-system-agent's
+                # debug HTTP server (default 8787) and we fetch pre-decoded
+                # snapshots for this device id. Leave empty for classic
+                # Elfin/Modbus TCP.
+                vol.Optional("agent_device_id"): cv.string,
                 vol.Optional("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
             }),
             errors=errors,
             description_placeholders={
-                "tip": "Выберите локальный порт или введите IP вашего Elfin EW10A / SMG-II"
+                "tip": (
+                    "Выберите локальный порт, введите IP/порт Elfin/SMG-II, "
+                    "или укажите providerDeviceId локального solar-system-agent "
+                    "(порт по умолчанию 8787)."
+                ),
             },
         )
 
@@ -132,18 +195,11 @@ class OptionsFlow(config_entries.OptionsFlow):
         }
         current_device: str = data.get("device", "") or ""
 
-        # Попробуем выделить host/port из device, если это "ip:port"
-        current_host = ""
-        current_port = 8899
-
-        if current_device and ":" in current_device and not current_device.startswith("/"):
-            # что-то вроде "10.0.0.106:17824"
-            host_part, port_part = current_device.rsplit(":", 1)
-            current_host = host_part
-            try:
-                current_port = int(port_part)
-            except (ValueError, TypeError):
-                current_port = 8899
+        # Распарсим текущий device в (host, port, agent_device_id)
+        # чтобы предзаполнить форму независимо от режима.
+        current_host, current_port, current_agent_device_id = _parse_device_uri(
+            current_device,
+        )
 
         # Список доступных serial-портов
         device_ports = await list_serial_ports()
@@ -152,11 +208,14 @@ class OptionsFlow(config_entries.OptionsFlow):
             device = user_input.get("device")
             host = user_input.get("host")
             port = user_input.get("port", 8899)
+            agent_device_id = (user_input.get("agent_device_id") or "").strip()
 
             if not device and not host:
                 errors["base"] = "select_or_enter"
             else:
-                new_device_value = f"{host}:{port}" if host else device
+                new_device_value = _build_device_uri(
+                    device, host, port, agent_device_id
+                )
 
                 # Сохраняем в options (data остаётся как было)
                 return self.async_create_entry(
@@ -166,26 +225,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                     },
                 )
 
-        # Формируем форму для изменения
-        # Если у нас текущий host выделен, то по умолчанию в выпадающем списке device оставляем пусто,
-        # чтобы не путать пользователя: он сейчас в режиме TCP.
-        default_device = "" if current_host else current_device
-
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema({
-                # vol.Optional(
-                #     "device",
-                #     default=default_device,
-                # ): selector({
-                #     "select": {
-                #         "multiple": False,
-                #         "options": [
-                #             {"value": d, "label": d}
-                #             for d in device_ports
-                #         ],
-                #     }
-                # }),
                 vol.Optional(
                     "host",
                     default=current_host,
@@ -194,6 +236,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                     "port",
                     default=current_port,
                 ): cv.port,
+                vol.Optional(
+                    "agent_device_id",
+                    default=current_agent_device_id,
+                ): cv.string,
                 vol.Optional(
                     "update_interval",
                     default=self._config_entry.options.get(
@@ -204,7 +250,11 @@ class OptionsFlow(config_entries.OptionsFlow):
             }),
             errors=errors,
             description_placeholders={
-                "tip": "Вы можете сменить serial-порт или IP/порт Elfin/SMG-II",
+                "tip": (
+                    "Elfin/SMG-II: заполните Host+Port, оставьте Agent Device ID пустым. "
+                    "Локальный agent: Host+Port указывают на его HTTP API (обычно 8787), "
+                    "а Agent Device ID — providerDeviceId устройства."
+                ),
             },
         )
 

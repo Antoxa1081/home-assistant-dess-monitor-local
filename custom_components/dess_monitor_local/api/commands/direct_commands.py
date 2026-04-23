@@ -1,9 +1,132 @@
 import asyncio
+import logging
 import re
 import struct
 from enum import Enum, unique, IntEnum
+from urllib.parse import urlparse
 
+import aiohttp
 import serial_asyncio_fast as serial_asyncio
+
+_LOGGER = logging.getLogger(__name__)
+
+# ============================================================================
+# agent:// protocol
+# ============================================================================
+#
+# Format: agent://<host>:<port>/<providerDeviceId>
+#
+# Targets the local HTTP API exposed by solar-system-agent:
+#   GET http://<host>:<port>/devices/<providerDeviceId>/latest
+# returning
+#   { recordedAt, ageMs, raw: { ...Voltronic-native keys... }, canonical: ... }
+#
+# `raw` dict layout matches what the agent's scheduler emits, which in
+# turn mirrors the shape the solar-system-back `direct` provider uses:
+#   - QPIGS fields appear bare:              battery_voltage, pv_charging_power, ...
+#   - QPIRI fields are prefixed "qpiri.":    qpiri.output_source_priority, ...
+#   - QMOD fields are prefixed "qmod.":      qmod.operating_mode
+#
+# We split the same dict into the QPIGS / QPIRI / QMOD buckets the
+# decoders in this file already expect, so downstream sensors see
+# identical inputs regardless of whether data came over Modbus, serial,
+# Elfin, or the agent.
+
+# Max acceptable reading age. Agent polls on a cloud-configured interval
+# (typically 5–30 s); anything older than this threshold means the agent
+# itself is stuck or its upstream hardware is unreachable, and we'd
+# rather surface "unavailable" in HA than pretend the values are live.
+AGENT_STALE_THRESHOLD_MS = 5 * 60 * 1000
+
+
+def _parse_agent_uri(device: str) -> tuple[str, int, str]:
+    """Decompose `agent://host:port/providerDeviceId` into its parts.
+
+    Raises ValueError on any malformed input — callers turn that into an
+    empty dict so the coordinator handles it uniformly with other
+    "cannot talk to device" outcomes.
+    """
+    parsed = urlparse(device)
+    if parsed.scheme != "agent":
+        raise ValueError(f"not an agent URI: {device}")
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(f"agent URI needs host:port: {device}")
+    provider_device_id = parsed.path.lstrip("/")
+    if not provider_device_id:
+        raise ValueError(f"agent URI missing providerDeviceId: {device}")
+    return parsed.hostname, parsed.port, provider_device_id
+
+
+async def _fetch_agent_snapshot(
+    host: str, port: int, provider_device_id: str, timeout: float
+) -> dict | None:
+    """GET the snapshot JSON from the agent. Returns None on any error.
+
+    The agent API is read-only, local-network, no-auth by design (see
+    AGENT_DEBUG_API_HOST=127.0.0.1 default on the agent side). We don't
+    bother with retries here — the coordinator polls on its own
+    schedule, and a transient failure just surfaces as empty-dict this
+    tick.
+    """
+    url = f"http://{host}:{port}/devices/{provider_device_id}/latest"
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout),
+        ) as session:
+            async with session.get(url) as resp:
+                if resp.status == 404:
+                    # No snapshot yet — agent is up but hasn't polled this
+                    # device successfully. Treat like "no data" quietly.
+                    return None
+                if resp.status != 200:
+                    _LOGGER.debug(
+                        "agent returned HTTP %s for %s", resp.status, url
+                    )
+                    return None
+                return await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+        _LOGGER.debug("agent unreachable at %s: %s", url, err)
+        return None
+
+
+def _split_raw_by_command(
+    raw: dict[str, str], command: str
+) -> dict[str, str]:
+    """Return the subset of `raw` that belongs to the requested command.
+
+    QPIGS keys are stored unprefixed in `raw`; QPIRI keys carry a
+    `qpiri.` prefix; QMOD keys carry `qmod.`. QPIGS2 isn't emitted by
+    the agent today — we return an empty dict for it so the coordinator
+    handles it like a normal empty response.
+    """
+    if command == "QPIGS":
+        return {
+            k: v
+            for k, v in raw.items()
+            if not k.startswith(("qpiri.", "qmod.", "qpigs2."))
+        }
+    if command == "QPIRI":
+        prefix = "qpiri."
+        return {
+            k[len(prefix) :]: v
+            for k, v in raw.items()
+            if k.startswith(prefix)
+        }
+    if command == "QMOD":
+        prefix = "qmod."
+        return {
+            k[len(prefix) :]: v
+            for k, v in raw.items()
+            if k.startswith(prefix)
+        }
+    if command == "QPIGS2":
+        prefix = "qpigs2."
+        return {
+            k[len(prefix) :]: v
+            for k, v in raw.items()
+            if k.startswith(prefix)
+        }
+    return {}
 
 # ==========================
 # ВСПОМОГАТЕЛЬНЫЕ ДЕКОДЕРЫ
@@ -775,14 +898,68 @@ async def get_direct_data(device: str, command_str: str, timeout: float = 30.0) 
     """
     Универсальный доступ к инвертору.
 
-    • device = "modbus://host:port"  → SMG-II по Modbus RTU-over-TCP, данные мимикрируют под QPIGS/QPIRI/QMOD.
-    • device = "tcp://host:port"    → классический Voltronic через Elfin (ASCII + CRC).
-    • device = "/dev/ttyUSB0"       → классический Voltronic по UART (ASCII + CRC).
+    • device = "modbus://host:port"         → SMG-II по Modbus RTU-over-TCP, данные мимикрируют под QPIGS/QPIRI/QMOD.
+    • device = "tcp://host:port"            → классический Voltronic через Elfin (ASCII + CRC).
+    • device = "agent://host:port/<id>"     → HTTP snapshot локального solar-system-agent по `providerDeviceId`.
+    • device = "/dev/ttyUSB0"               → классический Voltronic по UART (ASCII + CRC).
 
     Возвращает dict, совместимый с decode_qpigs / decode_qpiri / decode_qmod.
     """
 
     command = command_str.upper()
+
+    # ---- solar-system-agent HTTP snapshot ----
+    # Agent already decoded the raw Voltronic/Modbus response server-side
+    # and cached it in memory; we just pull the pre-shaped flat dict and
+    # split it into the command buckets downstream decoders expect.
+    if device.startswith("agent://"):
+        try:
+            host, port, provider_device_id = _parse_agent_uri(device)
+        except ValueError as err:
+            _LOGGER.warning("invalid agent URI %s: %s", device, err)
+            return {}
+
+        payload = await _fetch_agent_snapshot(
+            host, port, provider_device_id, timeout
+        )
+        if not payload:
+            return {}
+
+        age_ms = payload.get("ageMs")
+        if (
+            isinstance(age_ms, (int, float))
+            and age_ms > AGENT_STALE_THRESHOLD_MS
+        ):
+            # Surface as empty so sensors report unavailable rather than
+            # show a 10-minute-old value as if it were live.
+            _LOGGER.debug(
+                "agent snapshot for %s is stale (%sms) — dropping",
+                provider_device_id,
+                age_ms,
+            )
+            return {}
+
+        raw = payload.get("raw") or {}
+        if not isinstance(raw, dict):
+            return {}
+
+        if command == "QMOD":
+            # decode_qmod in this integration returns an OperatingMode
+            # enum; the agent already stored the same enum name as a
+            # string, so we hand back the expected shape verbatim.
+            sub = _split_raw_by_command(raw, "QMOD")
+            mode_name = sub.get("operating_mode")
+            if mode_name is None:
+                return {}
+            try:
+                return {"operating_mode": OperatingMode[mode_name]}
+            except KeyError:
+                _LOGGER.debug(
+                    "agent returned unknown operating_mode '%s'", mode_name
+                )
+                return {}
+
+        return _split_raw_by_command(raw, command)
 
     # ---- Виртуальные QPIGS/QPIRI/QMOD поверх Modbus (SMG-II) ----
     if device.startswith("modbus://"):
