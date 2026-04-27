@@ -9,6 +9,11 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from custom_components.dess_monitor_local.api.commands.direct_commands import get_direct_data
+from custom_components.dess_monitor_local.const import (
+    CONF_DEVICE,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,15 +24,16 @@ class DirectCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config_entry):
         """Initialize my coordinator."""
+        interval_seconds = int(
+            config_entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        )
         super().__init__(
             hass,
             _LOGGER,
             # Name of the data. For logging purposes.
             name="Direct request sensor",
             config_entry=config_entry,
-            # Polling interval. Will only be polled if there are subscribers.
-            update_interval=timedelta(seconds=10),
-            # update_interval=timedelta(seconds=config_entry.options.get("update_interval", 10)),
+            update_interval=timedelta(seconds=interval_seconds),
             # Set always_update to `False` if the data returned from the
             # api can be compared via `__eq__` to avoid duplicate updates
             # being dispatched to listeners
@@ -49,7 +55,7 @@ class DirectCoordinator(DataUpdateCoordinator):
         self.devices = await self.get_active_devices()
 
     async def get_active_devices(self):
-        device = self.config_entry.options.get("device", None)
+        device = self.config_entry.options.get(CONF_DEVICE, None)
 
         return [device]
 

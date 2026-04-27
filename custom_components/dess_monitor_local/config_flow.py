@@ -1,81 +1,242 @@
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import serial.tools.list_ports
 import voluptuous as vol
-from homeassistant import config_entries, exceptions
+from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.selector import selector
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    SelectOptionDict,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 import homeassistant.helpers.config_validation as cv
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_NAME,
+    CONF_DEVICE,
+    CONF_PROTOCOL,
+    CONF_HOST,
+    CONF_PORT,
+    CONF_SERIAL_DEVICE,
+    CONF_AGENT_DEVICE_ID,
+    CONF_UPDATE_INTERVAL,
+    PROTOCOL_TCP_ELFIN,
+    PROTOCOL_MODBUS,
+    PROTOCOL_AGENT,
+    PROTOCOL_SERIAL,
+    PROTOCOLS,
+    DEFAULT_TCP_PORT,
+    DEFAULT_AGENT_PORT,
+    DEFAULT_UPDATE_INTERVAL,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_SCHEMA = vol.Schema({
-    vol.Required("name"): str,
-})
 
-
-async def validate_input(hass: HomeAssistant, data: dict) -> dict[str, Any]:
-    return {"title": data["name"]}
-
-
-async def list_serial_ports() -> list[str]:
-    # return ['/dev/ttyUSB0']
+async def _list_serial_ports() -> list[str]:
     ports = await asyncio.to_thread(serial.tools.list_ports.comports)
     return [port.device for port in ports]
 
 
 def _build_device_uri(
-    device: str | None,
-    host: str | None,
+    protocol: str,
+    host: str,
     port: int,
+    serial_device: str,
     agent_device_id: str,
 ) -> str:
-    """Assemble the stored `device` field from form inputs.
-
-    Precedence:
-      1. `agent_device_id` filled → agent://host:port/providerDeviceId
-      2. `host` filled            → host:port    (Elfin TCP / Modbus path)
-      3. otherwise                → serial port selection
-
-    The agent branch requires host:port just like the TCP branch — we
-    reuse the same two inputs so the form stays compact.
-    """
-    if agent_device_id and host:
+    """Compose the storage `device` string from form fields."""
+    if protocol == PROTOCOL_SERIAL:
+        return serial_device
+    if protocol == PROTOCOL_TCP_ELFIN:
+        return f"tcp://{host}:{port}"
+    if protocol == PROTOCOL_MODBUS:
+        return f"modbus://{host}:{port}"
+    if protocol == PROTOCOL_AGENT:
         return f"agent://{host}:{port}/{agent_device_id}"
-    if host:
-        return f"{host}:{port}"
-    return device or ""
+    return ""
 
 
-def _parse_device_uri(device: str) -> tuple[str, int, str]:
-    """Best-effort split of the stored `device` string into (host, port,
-    agent_device_id) for pre-filling the edit form.
-
-    Returns blanks for fields that don't apply to the detected shape.
-    """
+def _parse_device_uri(device: str) -> dict[str, Any]:
+    """Best-effort recovery of (protocol, host, port, serial_device, agent_id)
+    from a stored device string. Used to pre-fill the options form for
+    entries created by older versions of this integration."""
+    blank = {
+        CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+        CONF_HOST: "",
+        CONF_PORT: DEFAULT_TCP_PORT,
+        CONF_SERIAL_DEVICE: "",
+        CONF_AGENT_DEVICE_ID: "",
+    }
     if not device:
-        return "", 8899, ""
+        return blank
+
     if device.startswith("agent://"):
-        # Reuse urlparse by poking at the non-standard scheme — Python
-        # still extracts hostname/port/path correctly.
-        from urllib.parse import urlparse
         parsed = urlparse(device)
-        if parsed.hostname and parsed.port:
-            return parsed.hostname, parsed.port, parsed.path.lstrip("/")
-        return "", 8899, ""
-    if ":" in device and not device.startswith("/"):
-        host_part, port_part = device.rsplit(":", 1)
+        return {
+            CONF_PROTOCOL: PROTOCOL_AGENT,
+            CONF_HOST: parsed.hostname or "",
+            CONF_PORT: parsed.port or DEFAULT_AGENT_PORT,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: (parsed.path or "").lstrip("/"),
+        }
+    if device.startswith("modbus://"):
+        parsed = urlparse(device)
+        return {
+            CONF_PROTOCOL: PROTOCOL_MODBUS,
+            CONF_HOST: parsed.hostname or "",
+            CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: "",
+        }
+    if device.startswith("tcp://"):
+        parsed = urlparse(device)
+        return {
+            CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+            CONF_HOST: parsed.hostname or "",
+            CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: "",
+        }
+    # Legacy "host:port" stored without scheme — assume Elfin TCP.
+    if ":" in device and not device.startswith("/") and not device.startswith("\\"):
+        host_part, _, port_part = device.rpartition(":")
         try:
-            return host_part, int(port_part), ""
+            port = int(port_part)
         except ValueError:
-            return host_part, 8899, ""
-    # Serial path — return device value verbatim via the `device` arg of
-    # the caller; host/port defaults keep the form valid.
-    return "", 8899, ""
+            return blank
+        return {
+            CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+            CONF_HOST: host_part,
+            CONF_PORT: port,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: "",
+        }
+    return {
+        CONF_PROTOCOL: PROTOCOL_SERIAL,
+        CONF_HOST: "",
+        CONF_PORT: DEFAULT_TCP_PORT,
+        CONF_SERIAL_DEVICE: device,
+        CONF_AGENT_DEVICE_ID: "",
+    }
+
+
+def _update_interval_field() -> Any:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=MIN_UPDATE_INTERVAL,
+            max=MAX_UPDATE_INTERVAL,
+            step=1,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement="s",
+        )
+    )
+
+
+async def _build_connection_schema(
+    protocol: str, defaults: dict[str, Any]
+) -> vol.Schema:
+    """Per-protocol schema for the connection step.
+
+    Each protocol shows only the fields it actually needs, plus the shared
+    update_interval at the bottom — keeps the form short and unambiguous.
+    """
+    schema: dict = {}
+
+    if protocol == PROTOCOL_SERIAL:
+        ports = await _list_serial_ports()
+        default_serial = defaults.get(CONF_SERIAL_DEVICE) or ""
+        # Make sure a previously-saved port stays selectable even when the
+        # adapter is unplugged at the moment of editing.
+        if default_serial and default_serial not in ports:
+            ports = [default_serial, *ports]
+        schema[
+            vol.Required(
+                CONF_SERIAL_DEVICE,
+                default=default_serial or vol.UNDEFINED,
+            )
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=[SelectOptionDict(value=p, label=p) for p in ports],
+                mode=SelectSelectorMode.DROPDOWN,
+                custom_value=True,
+            )
+        )
+    else:
+        default_port = (
+            DEFAULT_AGENT_PORT if protocol == PROTOCOL_AGENT else DEFAULT_TCP_PORT
+        )
+        schema[
+            vol.Required(
+                CONF_HOST,
+                default=defaults.get(CONF_HOST) or vol.UNDEFINED,
+            )
+        ] = cv.string
+        schema[
+            vol.Required(
+                CONF_PORT,
+                default=defaults.get(CONF_PORT) or default_port,
+            )
+        ] = cv.port
+        if protocol == PROTOCOL_AGENT:
+            schema[
+                vol.Required(
+                    CONF_AGENT_DEVICE_ID,
+                    default=defaults.get(CONF_AGENT_DEVICE_ID) or vol.UNDEFINED,
+                )
+            ] = cv.string
+
+    schema[
+        vol.Required(
+            CONF_UPDATE_INTERVAL,
+            default=defaults.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+        )
+    ] = _update_interval_field()
+
+    return vol.Schema(schema)
+
+
+def _validate_connection(
+    protocol: str, user_input: dict[str, Any]
+) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    host = (user_input.get(CONF_HOST) or "").strip()
+    serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
+    agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
+
+    if protocol == PROTOCOL_SERIAL and not serial_device:
+        errors[CONF_SERIAL_DEVICE] = "serial_required"
+    if protocol in (PROTOCOL_TCP_ELFIN, PROTOCOL_MODBUS, PROTOCOL_AGENT) and not host:
+        errors[CONF_HOST] = "host_required"
+    if protocol == PROTOCOL_AGENT and not agent_device_id:
+        errors[CONF_AGENT_DEVICE_ID] = "agent_device_id_required"
+    return errors
+
+
+def _protocol_schema(default_protocol: str) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_PROTOCOL, default=default_protocol): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=p, label=p) for p in PROTOCOLS
+                    ],
+                    mode=SelectSelectorMode.LIST,
+                    translation_key=CONF_PROTOCOL,
+                )
+            )
+        }
+    )
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -83,189 +244,164 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
 
     def __init__(self):
-        self._raw_sensors = False
         self._name: str | None = None
-        self._info: dict[str, Any] | None = None
+        self._protocol: str = PROTOCOL_TCP_ELFIN
 
     async def async_step_user(self, user_input=None):
-        """Первый шаг – ввод имени."""
+        """Step 1: hub name."""
         errors: dict[str, str] = {}
-
         if user_input is not None:
-            try:
-                info = await validate_input(self.hass, user_input)
-                self._info = info
-                self._name = user_input["name"]
-                return await self.async_step_select_devices()
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["name"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
+            self._name = user_input[CONF_NAME].strip()
+            if not self._name:
+                errors[CONF_NAME] = "name_required"
+            else:
+                return await self.async_step_protocol()
 
         return self.async_show_form(
             step_id="user",
-            data_schema=DATA_SCHEMA,
+            data_schema=vol.Schema({vol.Required(CONF_NAME): str}),
             errors=errors,
         )
 
-    async def async_step_select_devices(self, user_input=None):
-        """Шаг выбора способа подключения: serial, TCP (Elfin/SMG) или local agent."""
-        device_ports = await list_serial_ports()
+    async def async_step_protocol(self, user_input=None):
+        """Step 2: pick the transport protocol."""
+        if user_input is not None:
+            self._protocol = user_input[CONF_PROTOCOL]
+            return await self.async_step_connection()
+
+        return self.async_show_form(
+            step_id="protocol",
+            data_schema=_protocol_schema(self._protocol),
+        )
+
+    async def async_step_connection(self, user_input=None):
+        """Step 3: protocol-specific connection details + update interval."""
+        protocol = self._protocol
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            device = user_input.get("device")
-            host = user_input.get("host")
-            port = user_input.get("port", 8899)
-            agent_device_id = (user_input.get("agent_device_id") or "").strip()
+            errors = _validate_connection(protocol, user_input)
+            if not errors:
+                host = (user_input.get(CONF_HOST) or "").strip()
+                port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
+                serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
+                agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
+                update_interval = int(
+                    user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+                )
 
-            if not device and not host:
-                errors["base"] = "select_or_enter"
-            else:
-                # Сохраняем единое поле device:
-                #   - agent://host:port/providerDeviceId — локальный агент (если задан agent_device_id)
-                #   - /dev/ttyUSB0                       — serial
-                #   - host:port                          — Elfin TCP / Modbus
                 device_value = _build_device_uri(
-                    device, host, port, agent_device_id
+                    protocol, host, port, serial_device, agent_device_id
                 )
 
                 return self.async_create_entry(
-                    title=self._info.get("title", "Inverter") if self._info else "Inverter",
-                    data={
-                        "name": self._name,
-                        "device": device_value,
+                    title=self._name or "Inverter",
+                    data={CONF_NAME: self._name},
+                    options={
+                        CONF_PROTOCOL: protocol,
+                        CONF_DEVICE: device_value,
+                        CONF_HOST: host,
+                        CONF_PORT: port,
+                        CONF_SERIAL_DEVICE: serial_device,
+                        CONF_AGENT_DEVICE_ID: agent_device_id,
+                        CONF_UPDATE_INTERVAL: update_interval,
                     },
                 )
 
+        defaults = dict(user_input or {})
+        schema = await _build_connection_schema(protocol, defaults)
         return self.async_show_form(
-            step_id="select_devices",
-            data_schema=vol.Schema({
-                vol.Optional("device"): selector({
-                    "select": {
-                        "options": [
-                            {"value": d, "label": d}
-                            for d in device_ports
-                        ],
-                        "multiple": False,
-                    }
-                }),
-                vol.Optional("host"): cv.string,
-                vol.Optional("port", default=8899): cv.port,
-                # If filled, host/port point at the solar-system-agent's
-                # debug HTTP server (default 8787) and we fetch pre-decoded
-                # snapshots for this device id. Leave empty for classic
-                # Elfin/Modbus TCP.
-                vol.Optional("agent_device_id"): cv.string,
-                vol.Optional("update_interval", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-            }),
+            step_id="connection",
+            data_schema=schema,
             errors=errors,
-            description_placeholders={
-                "tip": (
-                    "Выберите локальный порт, введите IP/порт Elfin/SMG-II, "
-                    "или укажите providerDeviceId локального solar-system-agent "
-                    "(порт по умолчанию 8787)."
-                ),
-            },
+            description_placeholders={"protocol": protocol},
         )
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-        """Возвращает flow для редактирования настроек (host/port/device)."""
         return OptionsFlow(config_entry)
 
 
 class OptionsFlow(config_entries.OptionsFlow):
-    """Опции интеграции: редактирование host/port или serial-порта."""
+    """Edit transport, address and polling interval after install."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry):
         self._config_entry = config_entry
+        self._defaults: dict[str, Any] = {}
+        self._protocol: str = PROTOCOL_TCP_ELFIN
+
+    def _load_defaults(self) -> None:
+        opts = dict(self._config_entry.options)
+        # Recover protocol/host/port from the legacy `device` string when the
+        # entry predates the new schema.
+        parsed = _parse_device_uri(opts.get(CONF_DEVICE, "") or "")
+        self._defaults = {
+            CONF_HOST: opts.get(CONF_HOST, parsed[CONF_HOST]),
+            CONF_PORT: opts.get(CONF_PORT, parsed[CONF_PORT]),
+            CONF_SERIAL_DEVICE: opts.get(
+                CONF_SERIAL_DEVICE, parsed[CONF_SERIAL_DEVICE]
+            ),
+            CONF_AGENT_DEVICE_ID: opts.get(
+                CONF_AGENT_DEVICE_ID, parsed[CONF_AGENT_DEVICE_ID]
+            ),
+            CONF_UPDATE_INTERVAL: opts.get(
+                CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
+            ),
+        }
+        self._protocol = opts.get(CONF_PROTOCOL, parsed[CONF_PROTOCOL])
 
     async def async_step_init(self, user_input=None):
-        errors: dict[str, str] = {}
+        self._load_defaults()
+        return await self.async_step_protocol()
 
-        # Текущие данные – сначала options, потом data как fallback
-        data = {
-            **self._config_entry.data,
-            **self._config_entry.options,
-        }
-        current_device: str = data.get("device", "") or ""
+    async def async_step_protocol(self, user_input=None):
+        if user_input is not None:
+            self._protocol = user_input[CONF_PROTOCOL]
+            return await self.async_step_connection()
 
-        # Распарсим текущий device в (host, port, agent_device_id)
-        # чтобы предзаполнить форму независимо от режима.
-        current_host, current_port, current_agent_device_id = _parse_device_uri(
-            current_device,
+        return self.async_show_form(
+            step_id="protocol",
+            data_schema=_protocol_schema(self._protocol),
         )
 
-        # Список доступных serial-портов
-        device_ports = await list_serial_ports()
+    async def async_step_connection(self, user_input=None):
+        protocol = self._protocol
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            device = user_input.get("device")
-            host = user_input.get("host")
-            port = user_input.get("port", 8899)
-            agent_device_id = (user_input.get("agent_device_id") or "").strip()
-
-            if not device and not host:
-                errors["base"] = "select_or_enter"
-            else:
-                new_device_value = _build_device_uri(
-                    device, host, port, agent_device_id
+            errors = _validate_connection(protocol, user_input)
+            if not errors:
+                host = (user_input.get(CONF_HOST) or "").strip()
+                port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
+                serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
+                agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
+                update_interval = int(
+                    user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                 )
 
-                # Сохраняем в options (data остаётся как было)
+                device_value = _build_device_uri(
+                    protocol, host, port, serial_device, agent_device_id
+                )
+
                 return self.async_create_entry(
-                    title="",  # title не меняем
+                    title="",
                     data={
-                        "device": new_device_value,
+                        CONF_PROTOCOL: protocol,
+                        CONF_DEVICE: device_value,
+                        CONF_HOST: host,
+                        CONF_PORT: port,
+                        CONF_SERIAL_DEVICE: serial_device,
+                        CONF_AGENT_DEVICE_ID: agent_device_id,
+                        CONF_UPDATE_INTERVAL: update_interval,
                     },
                 )
 
+        defaults = {**self._defaults, **(user_input or {})}
+        schema = await _build_connection_schema(protocol, defaults)
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    "host",
-                    default=current_host,
-                ): cv.string,
-                vol.Optional(
-                    "port",
-                    default=current_port,
-                ): cv.port,
-                vol.Optional(
-                    "agent_device_id",
-                    default=current_agent_device_id,
-                ): cv.string,
-                vol.Optional(
-                    "update_interval",
-                    default=self._config_entry.options.get(
-                        "update_interval",
-                        self._config_entry.data.get("update_interval", 10),
-                    ),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-            }),
+            step_id="connection",
+            data_schema=schema,
             errors=errors,
-            description_placeholders={
-                "tip": (
-                    "Elfin/SMG-II: заполните Host+Port, оставьте Agent Device ID пустым. "
-                    "Локальный agent: Host+Port указывают на его HTTP API (обычно 8787), "
-                    "а Agent Device ID — providerDeviceId устройства."
-                ),
-            },
+            description_placeholders={"protocol": protocol},
         )
-
-
-class CannotConnect(exceptions.HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidHost(exceptions.HomeAssistantError):
-    """Error to indicate there is an invalid hostname."""
-
-
-class InvalidAuth(exceptions.HomeAssistantError):
-    """Error to indicate there is an invalid auth."""

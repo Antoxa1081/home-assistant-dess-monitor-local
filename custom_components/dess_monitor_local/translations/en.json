@@ -5,36 +5,88 @@
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-      "invalid_auth": "Invalid login or password",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
+      "unknown": "[%key:common::config_flow::error::unknown%]",
+      "name_required": "Please enter a name",
+      "host_required": "Host/IP is required for this protocol",
+      "serial_required": "Please pick or enter a serial port",
+      "agent_device_id_required": "Provider device ID is required for the local agent"
     },
     "step": {
       "user": {
+        "title": "Add DESS Monitor Local",
+        "description": "Give this hub a friendly name. You will pick the connection protocol and address on the next steps.",
         "data": {
-          "password": "Password",
-          "name": "Login",
-          "dynamic_settings": "Device settings (allow to read & set equipment settings)",
-          "raw_sensors": "Device raw sensors (provide all available by wifi plug sensor fields)",
-          "direct_request_protocol": "Direct data request protocol beta (provide near-realtime direct data reading from equipment, excluding non Axpert devices like Anenji etc.)"
+          "name": "Name"
         }
       },
-      "select_devices": {
+      "protocol": {
+        "title": "Choose protocol",
+        "description": "Pick how the inverter is reachable from this Home Assistant instance.",
         "data": {
-          "devices": "Select required devices"
+          "protocol": "Protocol"
+        }
+      },
+      "connection": {
+        "title": "Connection settings",
+        "description": "Protocol: {protocol}. Enter the connection address and how often Home Assistant should poll the device.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "serial_device": "Serial port",
+          "agent_device_id": "Provider device ID",
+          "update_interval": "Update interval (seconds)"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the inverter / gateway / agent.",
+          "port": "TCP port. Defaults: 8899 for Elfin/Modbus, 8787 for the local agent.",
+          "serial_device": "USB / RS232 device path. You can also type a path manually.",
+          "agent_device_id": "providerDeviceId of the inverter exposed by solar-system-agent.",
+          "update_interval": "How often to poll the device. Lower values mean more frequent updates."
         }
       }
     }
   },
   "options": {
+    "error": {
+      "host_required": "Host/IP is required for this protocol",
+      "serial_required": "Please pick or enter a serial port",
+      "agent_device_id_required": "Provider device ID is required for the local agent"
+    },
     "step": {
-      "init": {
-        "title": "Update hub parameters",
+      "protocol": {
+        "title": "Connection protocol",
+        "description": "Pick how this hub talks to the inverter.",
         "data": {
-          "devices": "Available devices",
-          "dynamic_settings": "Device settings (allow to read & set equipment settings)",
-          "raw_sensors": "Device raw sensors (provide all available by wifi plug sensor fields)",
-          "direct_request_protocol": "Direct data request protocol beta (provide near-realtime direct data reading from equipment, excluding non Axpert devices like Anenji etc.)"
+          "protocol": "Protocol"
         }
+      },
+      "connection": {
+        "title": "Connection settings",
+        "description": "Protocol: {protocol}. Update the connection address and polling interval.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "serial_device": "Serial port",
+          "agent_device_id": "Provider device ID",
+          "update_interval": "Update interval (seconds)"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the inverter / gateway / agent.",
+          "port": "TCP port. Defaults: 8899 for Elfin/Modbus, 8787 for the local agent.",
+          "serial_device": "USB / RS232 device path. You can also type a path manually.",
+          "agent_device_id": "providerDeviceId of the inverter exposed by solar-system-agent.",
+          "update_interval": "How often to poll the device. Lower values mean more frequent updates."
+        }
+      }
+    }
+  },
+  "selector": {
+    "protocol": {
+      "options": {
+        "tcp_elfin": "Elfin TCP (Voltronic over Wi-Fi/Ethernet bridge)",
+        "modbus": "Modbus RTU over TCP (SMG-II)",
+        "agent": "Local solar-system-agent (HTTP)",
+        "serial": "Serial / USB (direct RS232)"
       }
     }
   }

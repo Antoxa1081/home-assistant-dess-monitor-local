@@ -1,0 +1,93 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Устройство уже настроено"
+    },
+    "error": {
+      "cannot_connect": "Не удалось подключиться",
+      "unknown": "Непредвиденная ошибка",
+      "name_required": "Введите имя",
+      "host_required": "Для этого протокола нужен Host/IP",
+      "serial_required": "Выберите или введите serial-порт",
+      "agent_device_id_required": "Для локального агента нужен providerDeviceId"
+    },
+    "step": {
+      "user": {
+        "title": "Добавление DESS Monitor Local",
+        "description": "Задайте имя хаба. На следующих шагах выберете протокол подключения и адрес.",
+        "data": {
+          "name": "Имя"
+        }
+      },
+      "protocol": {
+        "title": "Выбор протокола",
+        "description": "Укажите, каким способом инвертор доступен из Home Assistant.",
+        "data": {
+          "protocol": "Протокол"
+        }
+      },
+      "connection": {
+        "title": "Параметры подключения",
+        "description": "Протокол: {protocol}. Укажите адрес подключения и интервал опроса.",
+        "data": {
+          "host": "Host / IP адрес",
+          "port": "Порт",
+          "serial_device": "Serial-порт",
+          "agent_device_id": "Provider device ID",
+          "update_interval": "Интервал обновления (секунды)"
+        },
+        "data_description": {
+          "host": "IP или hostname инвертора / шлюза / агента.",
+          "port": "TCP-порт. По умолчанию: 8899 для Elfin/Modbus, 8787 для локального агента.",
+          "serial_device": "Путь к USB/RS232 устройству. Можно ввести вручную.",
+          "agent_device_id": "providerDeviceId устройства в solar-system-agent.",
+          "update_interval": "Как часто опрашивать устройство. Меньшее значение — чаще обновления."
+        }
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "host_required": "Для этого протокола нужен Host/IP",
+      "serial_required": "Выберите или введите serial-порт",
+      "agent_device_id_required": "Для локального агента нужен providerDeviceId"
+    },
+    "step": {
+      "protocol": {
+        "title": "Протокол подключения",
+        "description": "Выберите, как хаб связывается с инвертором.",
+        "data": {
+          "protocol": "Протокол"
+        }
+      },
+      "connection": {
+        "title": "Параметры подключения",
+        "description": "Протокол: {protocol}. Измените адрес подключения и интервал опроса.",
+        "data": {
+          "host": "Host / IP адрес",
+          "port": "Порт",
+          "serial_device": "Serial-порт",
+          "agent_device_id": "Provider device ID",
+          "update_interval": "Интервал обновления (секунды)"
+        },
+        "data_description": {
+          "host": "IP или hostname инвертора / шлюза / агента.",
+          "port": "TCP-порт. По умолчанию: 8899 для Elfin/Modbus, 8787 для локального агента.",
+          "serial_device": "Путь к USB/RS232 устройству. Можно ввести вручную.",
+          "agent_device_id": "providerDeviceId устройства в solar-system-agent.",
+          "update_interval": "Как часто опрашивать устройство. Меньшее значение — чаще обновления."
+        }
+      }
+    }
+  },
+  "selector": {
+    "protocol": {
+      "options": {
+        "tcp_elfin": "Elfin TCP (Voltronic через Wi-Fi/Ethernet шлюз)",
+        "modbus": "Modbus RTU поверх TCP (SMG-II)",
+        "agent": "Локальный solar-system-agent (HTTP)",
+        "serial": "Serial / USB (прямое RS232)"
+      }
+    }
+  }
+}
