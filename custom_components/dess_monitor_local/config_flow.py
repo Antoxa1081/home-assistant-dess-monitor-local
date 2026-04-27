@@ -30,6 +30,7 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     PROTOCOL_TCP_ELFIN,
     PROTOCOL_MODBUS,
+    PROTOCOL_PI18,
     PROTOCOL_AGENT,
     PROTOCOL_SERIAL,
     PROTOCOLS,
@@ -62,6 +63,8 @@ def _build_device_uri(
         return f"tcp://{host}:{port}"
     if protocol == PROTOCOL_MODBUS:
         return f"modbus://{host}:{port}"
+    if protocol == PROTOCOL_PI18:
+        return f"pi18://{host}:{port}"
     if protocol == PROTOCOL_AGENT:
         return f"agent://{host}:{port}/{agent_device_id}"
     return ""
@@ -94,6 +97,15 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         parsed = urlparse(device)
         return {
             CONF_PROTOCOL: PROTOCOL_MODBUS,
+            CONF_HOST: parsed.hostname or "",
+            CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: "",
+        }
+    if device.startswith("pi18://"):
+        parsed = urlparse(device)
+        return {
+            CONF_PROTOCOL: PROTOCOL_PI18,
             CONF_HOST: parsed.hostname or "",
             CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
             CONF_SERIAL_DEVICE: "",
@@ -216,7 +228,10 @@ def _validate_connection(
 
     if protocol == PROTOCOL_SERIAL and not serial_device:
         errors[CONF_SERIAL_DEVICE] = "serial_required"
-    if protocol in (PROTOCOL_TCP_ELFIN, PROTOCOL_MODBUS, PROTOCOL_AGENT) and not host:
+    if (
+        protocol in (PROTOCOL_TCP_ELFIN, PROTOCOL_MODBUS, PROTOCOL_PI18, PROTOCOL_AGENT)
+        and not host
+    ):
         errors[CONF_HOST] = "host_required"
     if protocol == PROTOCOL_AGENT and not agent_device_id:
         errors[CONF_AGENT_DEVICE_ID] = "agent_device_id_required"

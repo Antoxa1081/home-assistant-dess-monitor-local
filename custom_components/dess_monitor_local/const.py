@@ -15,11 +15,13 @@ CONF_UPDATE_INTERVAL = "update_interval"
 # Supported protocol identifiers
 PROTOCOL_TCP_ELFIN = "tcp_elfin"
 PROTOCOL_MODBUS = "modbus"
+PROTOCOL_PI18 = "pi18"
 PROTOCOL_AGENT = "agent"
 PROTOCOL_SERIAL = "serial"
 
 PROTOCOLS = [
     PROTOCOL_TCP_ELFIN,
+    PROTOCOL_PI18,
     PROTOCOL_MODBUS,
     PROTOCOL_AGENT,
     PROTOCOL_SERIAL,

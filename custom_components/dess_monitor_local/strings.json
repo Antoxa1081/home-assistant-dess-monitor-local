@@ -83,7 +83,8 @@
   "selector": {
     "protocol": {
       "options": {
-        "tcp_elfin": "Elfin TCP (Voltronic over Wi-Fi/Ethernet bridge)",
+        "tcp_elfin": "Elfin TCP (Voltronic / Axpert PI30 over Wi-Fi/Ethernet bridge)",
+        "pi18": "PI18 / InfiniSolar-V over TCP",
         "modbus": "Modbus RTU over TCP (SMG-II)",
         "agent": "Local solar-system-agent (HTTP)",
         "serial": "Serial / USB (direct RS232)"

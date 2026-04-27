@@ -8,7 +8,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from custom_components.dess_monitor_local.api.commands.direct_commands import get_direct_data
+from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
     CONF_UPDATE_INTERVAL,
