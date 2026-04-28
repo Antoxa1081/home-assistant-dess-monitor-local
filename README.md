@@ -18,7 +18,7 @@ integration card.
 | `tcp_elfin` | Voltronic / Axpert PI30 over an Elfin Wi-Fi/Ethernet bridge | host / IP | `8899` |
 | `pi18` | PI18 / InfiniSolar-V over TCP | host / IP | `8899` |
 | `modbus` | Modbus RTU over TCP (SMG-II) | host / IP | `8899` |
-| `agent` | Local [`solar-system-agent`](https://github.com/Antoxa1081/solar-system-agent) HTTP API | host / IP + `providerDeviceId` | `8787` |
+| `agent` | Local [`solar-system-agent`] HTTP API | host / IP + `providerDeviceId` | `8787` |
 | `serial` | Direct RS232 / USB connection | device path (`/dev/ttyUSB0`, `COM3`, …) | — |
 
 Common option for all protocols:
