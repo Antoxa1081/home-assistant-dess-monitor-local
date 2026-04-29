@@ -27,4 +27,4 @@ Common option for all protocols:
   (default `10`).
 
 For protocol-specific notes, troubleshooting and the internal `device` URI
-format see the [Configuration wiki page](https://github.com/Antoxa1081/home-assistant-dess-monitor-local/wiki/Configuration).
+format see the [Configuration wiki page](https://github.com/Antoxa1081/home-assistant-dess-monitor-local/wiki).
