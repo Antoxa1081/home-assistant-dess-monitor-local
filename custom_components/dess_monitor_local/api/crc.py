@@ -6,8 +6,6 @@ Modbus CRC-16 (poly 0xA001, init 0xFFFF, reflected).
 """
 from __future__ import annotations
 
-import struct
-
 
 def crc16_xmodem(data: bytes) -> int:
     """XMODEM CRC-16 (poly 0x1021, init 0x0000)."""
@@ -31,16 +29,25 @@ def crc16_xmodem_bytes(data: bytes) -> bytes:
 def crc16_voltronic(data: bytes) -> bytes:
     """Voltronic ASCII-frame CRC (QPIGS/QPIRI/QMOD).
 
-    Functionally equivalent to ``crc16_xmodem_bytes`` but kept under its
-    historical name for clarity at call sites that explicitly mean the
-    Voltronic ASCII variant. Returned in big-endian wire order.
+    Returned in big-endian wire order. Voltronic firmware reserves
+    0x28 ('('), 0x0D ('\\r') and 0x0A ('\\n') as frame control bytes —
+    if either CRC byte falls on one of these, it is incremented by 1
+    so the gateway/UART parser doesn't truncate the packet. Without
+    this adjustment, commands like POP02 (raw CRC 0xE20A) are silently
+    dropped by Elfin gateways.
     """
     crc = 0
     for b in data:
         x = (crc >> 8) ^ b
         x ^= x >> 4
         crc = ((crc << 8) ^ (x << 12) ^ (x << 5) ^ x) & 0xFFFF
-    return struct.pack(">H", crc)
+    high = (crc >> 8) & 0xFF
+    low = crc & 0xFF
+    if high in (0x28, 0x0D, 0x0A):
+        high += 1
+    if low in (0x28, 0x0D, 0x0A):
+        low += 1
+    return bytes([high, low])
 
 
 def crc16_modbus(data: bytes) -> int:

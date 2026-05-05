@@ -355,7 +355,9 @@ async def set_battery_charge_current(device: str, amps: int) -> dict:
     return await set_direct_data(device, f"PBATC{amps:03d}")
 
 
-async def set_max_utility_charge_current(device: str, amps: int) -> dict:
+async def set_max_utility_charge_current(
+    device: str, amps: int, float_format: bool = False
+) -> dict:
     if device.startswith("agent://"):
         return await post_agent_setting(device, "max_utility_charging_current", int(amps))
     if device.startswith("modbus://"):
@@ -364,4 +366,5 @@ async def set_max_utility_charge_current(device: str, amps: int) -> dict:
         except Exception:
             return {"error": f"invalid modbus device: {device}"}
         return await write_modbus_single_register(host, port, 333, int(amps * 10))
-    return await set_direct_data(device, f"MUCHGC{amps:03d}")
+    payload = f"MUCHGC{amps:04.1f}" if float_format else f"MUCHGC{amps:03d}"
+    return await set_direct_data(device, payload)

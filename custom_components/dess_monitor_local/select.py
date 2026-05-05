@@ -172,26 +172,47 @@ class InverterChargeSourcePrioritySelect(SelectBase):
         await self.coordinator.async_request_refresh()
 
 
+def _normalize_amps(raw) -> str | None:
+    """Coerce firmware-reported current ('02.0', '030', '2.0') to canonical str(int)."""
+    if raw is None:
+        return None
+    try:
+        return str(int(float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
 class InverterMaxUtilityChargingCurrentNumber(SelectBase):
     def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
         super().__init__(inverter_device, coordinator)
         self._attr_unique_id = f"{self._inverter_device.inverter_id}_max_utility_charging_current"
         self._attr_name = f"{self._inverter_device.name} Max Utility Charging Current"
         self._attr_options = ['2', '10', '20', '30', '40', '50', '60', '70', '80', '90', '100', '110', '120']
+        self._raw_readback: str | None = None
 
         if coordinator.data is not None:
             data = coordinator.data[self._inverter_device.inverter_id]
-            self._attr_current_option = resolve_chrage_source_priority(data)
+            raw = resolve_max_utility_charging_current(data)
+            self._raw_readback = raw if raw is None else str(raw)
+            self._attr_current_option = _normalize_amps(raw)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         data = self.coordinator.data[self._inverter_device.inverter_id]
-        self._attr_current_option = resolve_max_utility_charging_current(data)
+        raw = resolve_max_utility_charging_current(data)
+        self._raw_readback = raw if raw is None else str(raw)
+        self._attr_current_option = _normalize_amps(raw)
         self.async_write_ha_state()
 
     async def async_select_option(self, option: str):
         if option in self._attr_options:
+            amps = int(option)
+            float_format = self._raw_readback is not None and '.' in self._raw_readback
             queue = self.hass.data["dess_monitor_local_queue"]
-            await queue.enqueue(lambda: set_max_utility_charge_current(self._inverter_device.device_data, int(option)))
+            await queue.enqueue(
+                lambda: set_max_utility_charge_current(
+                    self._inverter_device.device_data, amps, float_format=float_format
+                )
+            )
             self._attr_current_option = option
         await self.coordinator.async_request_refresh()

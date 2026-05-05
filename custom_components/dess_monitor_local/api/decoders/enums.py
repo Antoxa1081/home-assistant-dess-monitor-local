@@ -71,8 +71,8 @@ class BatteryTypeSetting(Enum):
 
 class OutputSourcePrioritySetting(Enum):
     UTILITY_FIRST = "POP00"
-    SBU_PRIORITY = "POP01"
-    SOLAR_FIRST = "POP02"
+    SOLAR_FIRST = "POP01"
+    SBU_PRIORITY = "POP02"
 
 
 class ChargeSourcePrioritySetting(Enum):
