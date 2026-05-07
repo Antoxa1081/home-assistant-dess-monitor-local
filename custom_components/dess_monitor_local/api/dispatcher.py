@@ -59,13 +59,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def get_direct_data(
-    device: str, command_str: str, timeout: float = 30.0
+    device: str, command_str: str, timeout: float = 30.0, strict_crc: bool = False
 ) -> dict:
     """Universal read dispatcher.
 
     See module docstring for supported URI schemes. Returns ``{}`` on any
     transport-level failure — the coordinator treats that as "no data
     this tick" rather than escalating.
+
+    ``strict_crc`` is propagated to the Voltronic/PI18 transports; when
+    True, frames with a bad CRC are dropped instead of being passed to the
+    parser. Modbus/agent paths ignore the flag.
     """
     command = command_str.upper()
 
@@ -143,7 +147,7 @@ async def get_direct_data(
 
     # ---- pi18:// — InfiniSolar-V over TCP / serial ----
     if device.startswith("pi18://") or device.startswith("pi18-serial://"):
-        return await query_pi18(device, command, timeout)
+        return await query_pi18(device, command, timeout, strict_crc=strict_crc)
 
     # ---- Voltronic Axpert: Elfin TCP or serial ----
     loop = asyncio.get_running_loop()
@@ -158,14 +162,14 @@ async def get_direct_data(
         if device.startswith("tcp://"):
             host, port = parse_tcp_uri(device)
             transport, _ = await loop.create_connection(
-                lambda: ElfinTCPProtocol(command, on_response),
+                lambda: ElfinTCPProtocol(command, on_response, strict_crc=strict_crc),
                 host,
                 port,
             )
         else:
             transport, _ = await serial_asyncio.create_serial_connection(
                 loop,
-                lambda: SerialCommandProtocol(command, on_response),
+                lambda: SerialCommandProtocol(command, on_response, strict_crc=strict_crc),
                 device,
                 baudrate=SERIAL_BAUDRATE,
                 bytesize=8,

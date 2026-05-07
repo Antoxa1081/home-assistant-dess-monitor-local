@@ -12,7 +12,9 @@ from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
     CONF_UPDATE_INTERVAL,
+    CONF_STRICT_CRC,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_STRICT_CRC,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,13 +62,20 @@ class DirectCoordinator(DataUpdateCoordinator):
         return [device]
 
     async def _async_update_data(self):
+        strict_crc = bool(
+            self.config_entry.options.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC)
+        )
         try:
             async with async_timeout.timeout(120):
                 async def fetch_device_data(device):
                     queue = self.hass.data["dess_monitor_local_queue"]
                     # qpigs = await get_direct_data(device, 'QPIGS')
-                    qpigs = await queue.enqueue(lambda: get_direct_data(device, 'QPIGS', 30))
-                    qpiri = await queue.enqueue(lambda: get_direct_data(device, 'QPIRI', 30))
+                    qpigs = await queue.enqueue(
+                        lambda: get_direct_data(device, 'QPIGS', 30, strict_crc=strict_crc)
+                    )
+                    qpiri = await queue.enqueue(
+                        lambda: get_direct_data(device, 'QPIRI', 30, strict_crc=strict_crc)
+                    )
                     # qpigs2 = await get_direct_data(device, 'QPIGS2')
                     # qpiri = await get_direct_data(device, 'QPIRI')
                     return device, {

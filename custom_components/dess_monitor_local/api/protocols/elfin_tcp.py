@@ -9,18 +9,22 @@ TCP↔RS232 bridge — wire format is identical to the serial path.
 from __future__ import annotations
 
 import asyncio
+import logging
 
-from ..crc import crc16_voltronic
+from ..crc import crc16_voltronic, validate_voltronic_response
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ElfinTCPProtocol(asyncio.Protocol):
     """Single-shot Voltronic ASCII request/response over TCP."""
 
-    def __init__(self, command: str, on_response):
+    def __init__(self, command: str, on_response, strict_crc: bool = False):
         self.transport: asyncio.Transport | None = None
         self.command = command.upper()
         self.command_bytes = command.encode("ascii")
         self.on_response = on_response
+        self.strict_crc = strict_crc
         self.buffer = bytearray()
 
     def connection_made(self, transport):
@@ -31,9 +35,22 @@ class ElfinTCPProtocol(asyncio.Protocol):
     def data_received(self, data: bytes):
         self.buffer.extend(data)
         if b"\r" in self.buffer or b"\n" in self.buffer:
-            raw = self.buffer.split(b"\r", 1)[0].strip()
+            raw_bytes = bytes(self.buffer.split(b"\r", 1)[0])
+            ok, _ = validate_voltronic_response(raw_bytes)
+            if not ok:
+                _LOGGER.warning(
+                    "CRC mismatch for %s response (%d bytes): %r",
+                    self.command,
+                    len(raw_bytes),
+                    raw_bytes[:120],
+                )
+                if self.strict_crc:
+                    self.on_response(None, ValueError("CRC mismatch"))
+                    if self.transport:
+                        self.transport.close()
+                    return
             try:
-                response = raw.decode(errors="ignore")
+                response = raw_bytes.strip().decode(errors="ignore")
                 self.on_response(response, None)
             except Exception as e:
                 self.on_response(None, e)

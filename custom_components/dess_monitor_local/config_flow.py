@@ -15,6 +15,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    BooleanSelector,
 )
 import homeassistant.helpers.config_validation as cv
 
@@ -28,6 +29,7 @@ from .const import (
     CONF_SERIAL_DEVICE,
     CONF_AGENT_DEVICE_ID,
     CONF_UPDATE_INTERVAL,
+    CONF_STRICT_CRC,
     PROTOCOL_TCP_ELFIN,
     PROTOCOL_MODBUS,
     PROTOCOL_PI18,
@@ -37,9 +39,15 @@ from .const import (
     DEFAULT_TCP_PORT,
     DEFAULT_AGENT_PORT,
     DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_STRICT_CRC,
     MIN_UPDATE_INTERVAL,
     MAX_UPDATE_INTERVAL,
 )
+
+# Protocols where the request/response framing carries a CRC and the
+# strict-CRC option is meaningful. Modbus has its own integrated check
+# already; agent receives pre-decoded JSON.
+_CRC_CAPABLE_PROTOCOLS = (PROTOCOL_TCP_ELFIN, PROTOCOL_SERIAL, PROTOCOL_PI18)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -215,6 +223,14 @@ async def _build_connection_schema(
         )
     ] = _update_interval_field()
 
+    if protocol in _CRC_CAPABLE_PROTOCOLS:
+        schema[
+            vol.Optional(
+                CONF_STRICT_CRC,
+                default=defaults.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC),
+            )
+        ] = BooleanSelector()
+
     return vol.Schema(schema)
 
 
@@ -304,6 +320,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 update_interval = int(
                     user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                 )
+                strict_crc = bool(
+                    user_input.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC)
+                )
 
                 device_value = _build_device_uri(
                     protocol, host, port, serial_device, agent_device_id
@@ -320,6 +339,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_SERIAL_DEVICE: serial_device,
                         CONF_AGENT_DEVICE_ID: agent_device_id,
                         CONF_UPDATE_INTERVAL: update_interval,
+                        CONF_STRICT_CRC: strict_crc,
                     },
                 )
 
@@ -363,6 +383,7 @@ class OptionsFlow(config_entries.OptionsFlow):
             CONF_UPDATE_INTERVAL: opts.get(
                 CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
             ),
+            CONF_STRICT_CRC: opts.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC),
         }
         self._protocol = opts.get(CONF_PROTOCOL, parsed[CONF_PROTOCOL])
 
@@ -394,6 +415,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                 update_interval = int(
                     user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                 )
+                strict_crc = bool(
+                    user_input.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC)
+                )
 
                 device_value = _build_device_uri(
                     protocol, host, port, serial_device, agent_device_id
@@ -409,6 +433,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                         CONF_SERIAL_DEVICE: serial_device,
                         CONF_AGENT_DEVICE_ID: agent_device_id,
                         CONF_UPDATE_INTERVAL: update_interval,
+                        CONF_STRICT_CRC: strict_crc,
                     },
                 )
 

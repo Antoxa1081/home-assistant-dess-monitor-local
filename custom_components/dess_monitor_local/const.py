@@ -11,6 +11,7 @@ CONF_PORT = "port"
 CONF_SERIAL_DEVICE = "serial_device"
 CONF_AGENT_DEVICE_ID = "agent_device_id"
 CONF_UPDATE_INTERVAL = "update_interval"
+CONF_STRICT_CRC = "strict_crc"
 
 # Supported protocol identifiers
 PROTOCOL_TCP_ELFIN = "tcp_elfin"
@@ -33,3 +34,4 @@ DEFAULT_AGENT_PORT = 8787
 DEFAULT_UPDATE_INTERVAL = 10
 MIN_UPDATE_INTERVAL = 1
 MAX_UPDATE_INTERVAL = 300
+DEFAULT_STRICT_CRC = False

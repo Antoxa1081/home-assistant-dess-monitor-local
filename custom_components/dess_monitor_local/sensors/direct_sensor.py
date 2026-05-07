@@ -1,3 +1,5 @@
+import logging
+
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import UnitOfElectricPotential, UnitOfPower, UnitOfTemperature, EntityCategory, \
     UnitOfElectricCurrent, UnitOfFrequency, UnitOfApparentPower
@@ -11,6 +13,13 @@ from custom_components.dess_monitor_local.api.commands.direct_commands import Pa
     parse_device_status_bits_b7_b0
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
+from custom_components.dess_monitor_local.sanity import (
+    is_plausible_battery_current,
+    is_plausible_battery_voltage,
+    is_plausible_power,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DirectSensorBase(CoordinatorEntity, SensorEntity):
@@ -393,16 +402,36 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
     def _handle_coordinator_update(self) -> None:
         qpigs = self.data.get('qpigs', {})
         qpiri = self.data.get('qpiri', {})
-        battery_charging_current = float(qpigs.get('battery_charging_current', 0))
-        battery_discharge_current = float(qpigs.get('battery_discharge_current', 0))
-        battery_voltage = float(qpigs.get('battery_voltage', 0))
+        try:
+            battery_charging_current = float(qpigs.get('battery_charging_current', 0))
+            battery_discharge_current = float(qpigs.get('battery_discharge_current', 0))
+            battery_voltage = float(qpigs.get('battery_voltage', 0))
+        except (TypeError, ValueError):
+            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
+
+        if (
+            not is_plausible_battery_current(battery_charging_current)
+            or not is_plausible_battery_current(battery_discharge_current)
+            or not is_plausible_battery_voltage(battery_voltage)
+        ):
+            _LOGGER.warning(
+                "%s: implausible reading "
+                "(I_chg=%.2f A, I_dis=%.2f A, V=%.2f V); dropping sample",
+                self.entity_id or self._attr_unique_id,
+                battery_charging_current,
+                battery_discharge_current,
+                battery_voltage,
+            )
+            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
+
         raw_value = (battery_charging_current - battery_discharge_current) * battery_voltage
 
-        if raw_value is not None:
-            try:
-                self._attr_native_value = float(raw_value)
-            except (ValueError, TypeError):
-                self._attr_native_value = None
+        if is_plausible_power(raw_value):
+            self._attr_native_value = float(raw_value)
         else:
             self._attr_native_value = None
 

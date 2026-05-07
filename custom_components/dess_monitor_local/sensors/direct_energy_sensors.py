@@ -1,3 +1,4 @@
+import logging
 import math
 from datetime import datetime
 
@@ -8,7 +9,14 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData
 from homeassistant.util import slugify
 
+from custom_components.dess_monitor_local.sanity import (
+    is_plausible_battery_current,
+    is_plausible_battery_voltage,
+    max_step_wh,
+)
 from custom_components.dess_monitor_local.sensors.direct_sensor import DirectTypedSensorBase
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
@@ -73,8 +81,29 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
             self._attr_native_value = 0.0
 
         if self._prev_power is not None:
-            # Добавляем накопленную энергию (усреднённая мощность за период)
-            self._attr_native_value += (elapsed_seconds / 3600) * (self._prev_power + current_value) / 2
+            # Trapezoidal average power × dt (в часах)
+            step_wh = (elapsed_seconds / 3600) * (self._prev_power + current_value) / 2
+            ceiling = max_step_wh(elapsed_seconds)
+            if 0 <= step_wh <= ceiling:
+                self._attr_native_value += step_wh
+            else:
+                # Единичный битый сэмпл (CRC-валидный, но семантически невозможный)
+                # обрывает трапецию: иначе он отравит и следующий тик через _prev_power.
+                _LOGGER.warning(
+                    "%s: trapezoidal step out of bounds "
+                    "(%.1f Wh, ceiling %.1f Wh, prev=%.1f W, curr=%.1f W, dt=%.1fs); "
+                    "dropping sample and resetting integrator state",
+                    self.entity_id or self._attr_unique_id,
+                    step_wh,
+                    ceiling,
+                    self._prev_power,
+                    current_value,
+                    elapsed_seconds,
+                )
+                self._prev_power = None
+                self._prev_ts = now
+                self.async_write_ha_state()
+                return
 
         # Обновляем предыдущее значение мощности и время
         self._prev_power = current_value
@@ -193,6 +222,14 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
             voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
+            if not is_plausible_battery_current(current) or not is_plausible_battery_voltage(voltage):
+                _LOGGER.warning(
+                    "%s: implausible reading (I=%.2f A, V=%.2f V); dropping sample",
+                    self.entity_id or self._attr_unique_id,
+                    current,
+                    voltage,
+                )
+                raise ValueError("out of plausible range")
         except (KeyError, ValueError, TypeError):
             self._prev_power = None
             self._prev_ts = datetime.now()
@@ -232,6 +269,14 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
             voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
+            if not is_plausible_battery_current(current) or not is_plausible_battery_voltage(voltage):
+                _LOGGER.warning(
+                    "%s: implausible reading (I=%.2f A, V=%.2f V); dropping sample",
+                    self.entity_id or self._attr_unique_id,
+                    current,
+                    voltage,
+                )
+                raise ValueError("out of plausible range")
         except (KeyError, ValueError, TypeError):
             self._prev_power = None
             self._prev_ts = datetime.now()
