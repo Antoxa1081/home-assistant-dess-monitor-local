@@ -402,6 +402,10 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
     def _handle_coordinator_update(self) -> None:
         qpigs = self.data.get('qpigs', {})
         qpiri = self.data.get('qpiri', {})
+        if not qpigs:
+            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
         try:
             battery_charging_current = float(qpigs.get('battery_charging_current', 0))
             battery_discharge_current = float(qpigs.get('battery_discharge_current', 0))
@@ -411,12 +415,23 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
             self.async_write_ha_state()
             return
 
+        # All-zeros == "no data" (bridge offline, empty payload, missing keys
+        # falling back to default 0). Silently skip — not a parser anomaly.
+        if (
+            battery_charging_current == 0.0
+            and battery_discharge_current == 0.0
+            and battery_voltage == 0.0
+        ):
+            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
+
         if (
             not is_plausible_battery_current(battery_charging_current)
             or not is_plausible_battery_current(battery_discharge_current)
             or not is_plausible_battery_voltage(battery_voltage)
         ):
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "%s: implausible reading "
                 "(I_chg=%.2f A, I_dis=%.2f A, V=%.2f V); dropping sample",
                 self.entity_id or self._attr_unique_id,

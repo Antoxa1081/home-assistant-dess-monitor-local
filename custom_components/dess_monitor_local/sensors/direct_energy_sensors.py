@@ -222,8 +222,11 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
             voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
+            # All-zeros == bridge offline / empty payload — skip silently.
+            if current == 0.0 and voltage == 0.0:
+                raise ValueError("no data")
             if not is_plausible_battery_current(current) or not is_plausible_battery_voltage(voltage):
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "%s: implausible reading (I=%.2f A, V=%.2f V); dropping sample",
                     self.entity_id or self._attr_unique_id,
                     current,
@@ -269,8 +272,11 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
             voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
+            # All-zeros == bridge offline / empty payload — skip silently.
+            if current == 0.0 and voltage == 0.0:
+                raise ValueError("no data")
             if not is_plausible_battery_current(current) or not is_plausible_battery_voltage(voltage):
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "%s: implausible reading (I=%.2f A, V=%.2f V); dropping sample",
                     self.entity_id or self._attr_unique_id,
                     current,
