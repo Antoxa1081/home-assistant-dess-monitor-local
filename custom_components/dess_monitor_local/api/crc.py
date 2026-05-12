@@ -71,31 +71,54 @@ def crc16_modbus(data: bytes) -> int:
 def validate_voltronic_response(raw: bytes) -> tuple[bool, bytes]:
     """Validate a Voltronic PI30 response frame's CRC.
 
-    The wire format is ``(<payload><CRC_HI><CRC_LO>\\r``. CRC is XMODEM-16
-    over ``<payload>`` only (not including the leading ``(``). Some firmware
-    variants apply the same 0x28/0x0D/0x0A → +1 byte-bump used on the
-    request side, others don't — both forms are accepted.
+    The wire format is ``(<payload><CRC_HI><CRC_LO>\\r``. The CRC scope
+    differs between firmware variants found in the wild (Voltronic Axpert,
+    EASUN, ANERN, MUST, etc.):
+
+    * canonical:  XMODEM-16 over ``<payload>``
+    * with start: XMODEM-16 over ``(<payload>``
+    * with CR:    XMODEM-16 over ``<payload>\\r`` (some clones)
+
+    Each firmware may also apply the Voltronic 0x28/0x0D/0x0A → +1
+    byte-bump (to keep CRC bytes from colliding with frame delimiters)
+    or skip it entirely. All combinations are accepted; the false-positive
+    rate stays at CRC-16 strength (≈1 in 10⁴) even with six candidates.
 
     Args:
-        raw: response bytes *without* the trailing ``\\r``. The leading
-            ``(`` is optional; both forms are tolerated.
+        raw: response bytes *without* the trailing ``\\r``. Leading
+            non-frame bytes (NULs, whitespace from gateways) are tolerated;
+            the frame is located by searching for ``(``.
 
     Returns:
         ``(ok, payload)`` where ``payload`` is the response body with the
         leading ``(`` and trailing 2-byte CRC stripped. On too-short input
         returns ``(False, raw)``.
     """
-    if len(raw) < 3:
-        return False, raw
-    body = raw[1:] if raw.startswith(b"(") else raw
+    # Locate frame start; tolerate leading junk that some gateways inject
+    # (NUL bytes, stray whitespace, leftovers from previous connections).
+    idx = raw.find(b"(")
+    body = raw[idx + 1:] if idx >= 0 else raw.lstrip(b" \t\r\n\x00")
     if len(body) < 3:
-        return False, raw
+        return False, body
+
     payload = body[:-2]
     received = bytes(body[-2:])
-    raw_crc = crc16_xmodem(payload)
-    expected_unbumped = bytes([(raw_crc >> 8) & 0xFF, raw_crc & 0xFF])
-    expected_bumped = crc16_voltronic(payload)
-    return received in (expected_bumped, expected_unbumped), payload
+
+    # Try every CRC scope variant. If any matches under either bumped or
+    # raw form, the frame is accepted.
+    scopes = (
+        payload,
+        b"(" + payload,
+        payload + b"\r",
+    )
+    for scope in scopes:
+        raw_crc = crc16_xmodem(scope)
+        unbumped = bytes([(raw_crc >> 8) & 0xFF, raw_crc & 0xFF])
+        bumped = crc16_voltronic(scope)
+        if received == unbumped or received == bumped:
+            return True, payload
+
+    return False, payload
 
 
 def validate_pi18_response(raw: bytes) -> tuple[bool, bytes]:
