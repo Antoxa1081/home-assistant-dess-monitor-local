@@ -24,6 +24,13 @@ class DirectCoordinator(DataUpdateCoordinator):
     """My custom coordinator."""
     devices = []
 
+    # Resilience to transient transport errors (CRC mismatches, brief
+    # buffer corruption, gateway hiccups). One fast retry per command,
+    # then up to N-1 consecutive failures fall back to the last known
+    # sub-dict before the entity finally goes to "unavailable".
+    _RETRY_DELAY_S = 0.25
+    _MAX_CONSECUTIVE_FAILURES = 3
+
     def __init__(self, hass: HomeAssistant, config_entry):
         """Initialize my coordinator."""
         interval_seconds = int(
@@ -42,6 +49,9 @@ class DirectCoordinator(DataUpdateCoordinator):
             always_update=False
 
         )
+        # Per-(device, command) consecutive-failure counter. Reset on any
+        # successful read.
+        self._consecutive_failures: dict[str, dict[str, int]] = {}
         # self.my_api = my_api
         # self._device: MyDevice | None = None
 
@@ -65,17 +75,59 @@ class DirectCoordinator(DataUpdateCoordinator):
         strict_crc = bool(
             self.config_entry.options.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC)
         )
+        prev_data = self.data or {}
+        queue = self.hass.data["dess_monitor_local_queue"]
+
+        async def fetch_with_retry(device: str, cmd: str, section: str) -> dict:
+            """Read a command with one fast retry, falling back to the last
+            known section if both attempts return empty. After
+            ``_MAX_CONSECUTIVE_FAILURES`` failures in a row the section goes
+            empty so HA flips the entities to unavailable."""
+            failures = self._consecutive_failures.setdefault(device, {})
+            for attempt in range(2):
+                try:
+                    result = await queue.enqueue(
+                        lambda d=device, c=cmd: get_direct_data(
+                            d, c, 30, strict_crc=strict_crc
+                        )
+                    )
+                except Exception as err:  # transport raised unexpectedly
+                    _LOGGER.debug(
+                        "%s/%s attempt %d raised %r", device, cmd, attempt + 1, err
+                    )
+                    result = None
+                if result:
+                    failures[cmd] = 0
+                    return result
+                if attempt == 0:
+                    await asyncio.sleep(self._RETRY_DELAY_S)
+
+            failures[cmd] = failures.get(cmd, 0) + 1
+            if failures[cmd] < self._MAX_CONSECUTIVE_FAILURES:
+                last = (prev_data.get(device) or {}).get(section) or {}
+                if last:
+                    _LOGGER.debug(
+                        "%s/%s read failed (consecutive=%d/%d); freezing on last known data",
+                        device,
+                        cmd,
+                        failures[cmd],
+                        self._MAX_CONSECUTIVE_FAILURES,
+                    )
+                    return last
+            else:
+                _LOGGER.warning(
+                    "%s/%s failed %d times in a row; flipping to unavailable",
+                    device,
+                    cmd,
+                    failures[cmd],
+                )
+            return {}
+
         try:
             async with async_timeout.timeout(120):
                 async def fetch_device_data(device):
-                    queue = self.hass.data["dess_monitor_local_queue"]
-                    # qpigs = await get_direct_data(device, 'QPIGS')
-                    qpigs = await queue.enqueue(
-                        lambda: get_direct_data(device, 'QPIGS', 30, strict_crc=strict_crc)
-                    )
-                    qpiri = await queue.enqueue(
-                        lambda: get_direct_data(device, 'QPIRI', 30, strict_crc=strict_crc)
-                    )
+                    qpigs = await fetch_with_retry(device, 'QPIGS', 'qpigs')
+                    qpiri = await fetch_with_retry(device, 'QPIRI', 'qpiri')
                     # qpigs2 = await get_direct_data(device, 'QPIGS2')
                     # qpiri = await get_direct_data(device, 'QPIRI')
                     return device, {
