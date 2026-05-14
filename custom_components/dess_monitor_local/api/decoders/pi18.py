@@ -297,6 +297,242 @@ def _decode_mod(payload: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# FWS — Fault and warning status.
+# Response: ^D034AA,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q
+#   AA  = numeric fault code (0 when no fault)
+#   B-Q = per-warning bit (0/1)
+# ---------------------------------------------------------------------------
+
+
+# Fault code → human-readable description. Codes not listed in the spec
+# stay numeric so unexpected firmware values still surface as a number
+# rather than being silently mapped to ``None``.
+_PI18_FAULT_CODES: Mapping[int, str] = {
+    0: "No fault",
+    1: "Fan is locked",
+    2: "Over temperature",
+    3: "Battery voltage is too high",
+    4: "Battery voltage is too low",
+    5: "Output short circuited or over temperature",
+    6: "Output voltage is too high",
+    7: "Over load time out",
+    8: "Bus voltage is too high",
+    9: "Bus soft start failed",
+    11: "Main relay failed",
+    51: "Over current inverter",
+    52: "Bus soft start failed",
+    53: "Inverter soft start failed",
+    54: "Self-test failed",
+    55: "Over DC voltage on output of inverter",
+    56: "Battery connection is open",
+    57: "Current sensor failed",
+    58: "Output voltage is too low",
+    60: "Inverter negative power",
+    71: "Parallel version different",
+    72: "Output circuit failed",
+    80: "CAN communication failed",
+    81: "Parallel host line lost",
+    82: "Parallel synchronized signal lost",
+    83: "Parallel battery voltage detect different",
+    84: "Parallel line voltage or frequency detect different",
+    85: "Parallel line input current unbalanced",
+    86: "Parallel output setting different",
+}
+
+
+_FWS_WARNING_FIELDS = (
+    "warn_line_fail",                  # B
+    "warn_output_short",               # C
+    "warn_inverter_over_temperature",  # D
+    "warn_fan_lock",                   # E
+    "warn_battery_voltage_high",       # F
+    "warn_battery_low",                # G
+    "warn_battery_under",              # H
+    "warn_overload",                   # I
+    "warn_eeprom_fail",                # J
+    "warn_power_limit",                # K
+    "warn_pv1_voltage_high",           # L
+    "warn_pv2_voltage_high",           # M
+    "warn_mppt1_overload",             # N
+    "warn_mppt2_overload",             # O
+    "warn_battery_too_low_scc1",       # P
+    "warn_battery_too_low_scc2",       # Q
+)
+
+
+def _decode_fws(tokens: list[str]) -> dict[str, Any]:
+    if not tokens:
+        return {}
+    fault_code = _safe_int(tokens[0], 0)
+    result: dict[str, Any] = {
+        "fault_code": fault_code,
+        "fault_description": _PI18_FAULT_CODES.get(fault_code, f"Unknown ({fault_code})"),
+        "has_fault": fault_code != 0,
+    }
+    padded = list(tokens[1:]) + [""] * (len(_FWS_WARNING_FIELDS) - (len(tokens) - 1))
+    for name, token in zip(_FWS_WARNING_FIELDS, padded):
+        result[name] = bool(_safe_int(token, 0))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# FLAG — Enable/disable flag status.
+# Response: ^D020A,B,C,D,E,F,G,H,I
+# ---------------------------------------------------------------------------
+
+
+_FLAG_FIELDS = (
+    "flag_silence_buzzer",                 # A
+    "flag_overload_bypass",                # B
+    "flag_lcd_escape_default",             # C
+    "flag_overload_restart",               # D
+    "flag_over_temperature_restart",       # E
+    "flag_backlight_on",                   # F
+    "flag_alarm_primary_source_interrupt",  # G
+    "flag_fault_code_record",              # H
+    "flag_reserved",                       # I
+)
+
+
+def _decode_flag(tokens: list[str]) -> dict[str, Any]:
+    padded = list(tokens) + [""] * (len(_FLAG_FIELDS) - len(tokens))
+    return {
+        name: bool(_safe_int(token, 0))
+        for name, token in zip(_FLAG_FIELDS, padded)
+    }
+
+
+# ---------------------------------------------------------------------------
+# DI — Default value of changeable parameter.
+# Response: ^D068AAAA,BBB,C,DDD,EEE,FFF,GGG,HHH,III,JJ,K,L,M,N,O,P,S,T,U,V,W,X,Y,Z
+# ---------------------------------------------------------------------------
+
+
+_DI_FIELDS = (
+    ("default_ac_output_voltage",          0.1),   # AAAA
+    ("default_ac_output_frequency",        0.1),   # BBB
+    ("default_ac_input_voltage_range",     None),  # C
+    ("default_battery_under_voltage",      0.1),   # DDD
+    ("default_charging_float_voltage",     0.1),   # EEE
+    ("default_charging_bulk_voltage",      0.1),   # FFF
+    ("default_battery_recharge_voltage",   0.1),   # GGG
+    ("default_battery_redischarge_voltage", 0.1),  # HHH
+    ("default_max_charging_current",       None),  # III
+    ("default_max_ac_charging_current",    None),  # JJ
+    ("default_battery_type",               None),  # K
+    ("default_output_source_priority",     None),  # L
+    ("default_charger_source_priority",    None),  # M
+    ("default_solar_power_priority",       None),  # N
+    ("default_machine_type",               None),  # O
+    ("default_output_model_setting",       None),  # P
+    ("default_flag_silence_buzzer",        "bool"),  # S
+    ("default_flag_overload_restart",      "bool"),  # T
+    ("default_flag_over_temperature_restart", "bool"),  # U
+    ("default_flag_lcd_backlight_on",      "bool"),  # V
+    ("default_flag_alarm_primary_source_interrupt", "bool"),  # W
+    ("default_flag_fault_code_record",     "bool"),  # X
+    ("default_flag_overload_bypass",       "bool"),  # Y
+    ("default_flag_lcd_escape_default",    "bool"),  # Z
+)
+
+
+def _decode_di(tokens: list[str]) -> dict[str, Any]:
+    padded = list(tokens) + [""] * (len(_DI_FIELDS) - len(tokens))
+    result: dict[str, Any] = {}
+    for (name, scale), token in zip(_DI_FIELDS, padded):
+        if scale == "bool":
+            result[name] = bool(_safe_int(token, 0))
+        elif scale is None:
+            result[name] = _safe_int(token, 0)
+        else:
+            result[name] = round(_safe_int(token, 0) * scale, 2)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ID — Series number. Response: ^D025LLXXXXXXXXXXXXXXXXXXXX
+# LL = valid digit count (01..20), then 20 chars total.
+# ---------------------------------------------------------------------------
+
+
+def _decode_id(payload: str) -> dict[str, Any]:
+    if len(payload) < 2:
+        return {"serial_number": payload}
+    try:
+        length = int(payload[:2])
+    except ValueError:
+        return {"serial_number": payload[2:].rstrip("0") or payload}
+    digits = payload[2:]
+    serial = digits[:length] if 0 < length <= len(digits) else digits
+    return {"serial_number": serial}
+
+
+# ---------------------------------------------------------------------------
+# T — Current time. Response: ^D017YYYYMMDDHHFFSS
+# ---------------------------------------------------------------------------
+
+
+def _decode_t(payload: str) -> dict[str, Any]:
+    if len(payload) < 14:
+        return {"device_time": payload}
+    yyyy = payload[0:4]
+    mm = payload[4:6]
+    dd = payload[6:8]
+    hh = payload[8:10]
+    ff = payload[10:12]
+    ss = payload[12:14]
+    return {"device_time": f"{yyyy}-{mm}-{dd} {hh}:{ff}:{ss}"}
+
+
+# ---------------------------------------------------------------------------
+# VFW — CPU version. Response: ^D020aaaaa,bbbbb,ccccc
+# ---------------------------------------------------------------------------
+
+
+def _decode_vfw(tokens: list[str]) -> dict[str, Any]:
+    padded = list(tokens) + [""] * (3 - len(tokens))
+    return {
+        "cpu_main_version": padded[0],
+        "cpu_slave1_version": padded[1],
+        "cpu_slave2_version": padded[2],
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCHGCR / MUCHGCR — Max (AC) charging current selectable values.
+# Response: ^D030AAA,BBB,CCC,DDD,EEE,FFF,GGG (7 selectable amperage values)
+# ---------------------------------------------------------------------------
+
+
+def _decode_selectable_currents(tokens: list[str], key: str) -> dict[str, Any]:
+    values = [_safe_int(t, 0) for t in tokens if t]
+    return {key: values}
+
+
+# ---------------------------------------------------------------------------
+# Energy commands.
+#   ET                = total energy, unit kWh
+#   EYyyyy            = generated energy of year, unit kWh
+#   EMyyyymm          = generated energy of month, unit kWh
+#   EDyyyymmdd        = generated energy of day, unit Wh
+# All return ^D011NNNNNNNN (8-digit number, no separators).
+# ---------------------------------------------------------------------------
+
+
+def _decode_energy(native: str, payload: str) -> dict[str, Any]:
+    value = _safe_int(payload.strip(), 0)
+    if native == "ET":
+        return {"total_energy_kwh": value}
+    if native.startswith("EY"):
+        return {"yearly_energy_kwh": value, "energy_period": native[2:]}
+    if native.startswith("EM"):
+        return {"monthly_energy_kwh": value, "energy_period": native[2:]}
+    if native.startswith("ED"):
+        return {"daily_energy_wh": value, "energy_period": native[2:]}
+    return {"energy_value": value}
+
+
+# ---------------------------------------------------------------------------
 # Top-level decode entry point
 # ---------------------------------------------------------------------------
 
@@ -319,16 +555,35 @@ def decode_pi18_response(command: str, raw: bytes) -> dict[str, Any]:
     cmd = command.upper()
     native = LOGICAL_TO_NATIVE.get(cmd, cmd)
 
+    # Single-value / structured-string replies (no comma split).
     if native == "MOD":
         return _decode_mod(payload)
     if native == "PI":
         return {"protocol_id": payload}
+    if native == "ID":
+        return _decode_id(payload)
+    if native == "T":
+        return _decode_t(payload)
+    if native == "ET" or native.startswith(("ED", "EM", "EY")):
+        return _decode_energy(native, payload)
 
     tokens = [t.strip() for t in payload.split(",")]
     if native == "GS":
         return _decode_gs(tokens)
     if native == "PIRI":
         return _decode_piri(tokens)
+    if native == "FWS":
+        return _decode_fws(tokens)
+    if native == "FLAG":
+        return _decode_flag(tokens)
+    if native == "DI":
+        return _decode_di(tokens)
+    if native == "VFW":
+        return _decode_vfw(tokens)
+    if native == "MCHGCR":
+        return _decode_selectable_currents(tokens, "max_charging_current_options")
+    if native == "MUCHGCR":
+        return _decode_selectable_currents(tokens, "max_ac_charging_current_options")
 
     # Fallback for commands we encode but don't decode in detail yet.
     return {"raw_tokens": tokens}
