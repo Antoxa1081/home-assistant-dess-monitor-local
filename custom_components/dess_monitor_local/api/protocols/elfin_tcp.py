@@ -38,7 +38,11 @@ class ElfinTCPProtocol(asyncio.Protocol):
             raw_bytes = bytes(self.buffer.split(b"\r", 1)[0])
             ok, _ = validate_voltronic_response(raw_bytes)
             if not ok:
-                _LOGGER.warning(
+                # Single-frame CRC mismatches are routine on noisy RS232 lines;
+                # the coordinator's retry + freeze logic absorbs them. Only the
+                # "3 failures in a row" signal (logged from the coordinator)
+                # warrants WARNING-level attention.
+                _LOGGER.debug(
                     "CRC mismatch for %s response (%d bytes): %r",
                     self.command,
                     len(raw_bytes),

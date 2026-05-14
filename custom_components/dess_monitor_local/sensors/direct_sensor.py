@@ -42,9 +42,18 @@ class DirectSensorBase(CoordinatorEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if inverter_device and hub is available."""
-        return True
-        # return self._inverter_device.online and self._inverter_device.hub.online
+        """Return True if the coordinator has fetched data for this inverter.
+
+        Without this check the ``data`` property below dereferences
+        ``coordinator.data[id]`` on every state update; if the very first
+        poll fails (or HA restarts and we haven't completed a poll yet),
+        that raises TypeError/KeyError and corrupts the entity update
+        fan-out for every sibling entity on the same coordinator.
+        """
+        return (
+            self.coordinator.data is not None
+            and self._inverter_device.inverter_id in self.coordinator.data
+        )
 
     @property
     def data(self):

@@ -1,6 +1,6 @@
 import logging
 import math
-from datetime import datetime
+import time
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass, RestoreSensor
 from homeassistant.const import EntityCategory, UnitOfEnergy, PERCENTAGE
@@ -12,6 +12,7 @@ from homeassistant.util import slugify
 from custom_components.dess_monitor_local.sanity import (
     is_plausible_battery_current,
     is_plausible_battery_voltage,
+    is_plausible_power,
     max_step_wh,
 )
 from custom_components.dess_monitor_local.sensors.direct_sensor import DirectTypedSensorBase
@@ -51,7 +52,7 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
 
         # Для интеграции
         self._prev_power = None
-        self._prev_ts = datetime.now()
+        self._prev_ts = time.monotonic()
         self._restored = False
 
     async def async_added_to_hass(self) -> None:
@@ -73,8 +74,8 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
         return super().available and self._restored
 
     def update_energy_value(self, current_value: float):
-        now = datetime.now()
-        elapsed_seconds = (now - self._prev_ts).total_seconds()
+        now = time.monotonic()
+        elapsed_seconds = now - self._prev_ts
 
         # Гарантируем, что self._attr_native_value не None
         if self._attr_native_value is None:
@@ -120,6 +121,22 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
         except (TypeError, ValueError):
             power = None
 
+        # Sanity-bound: a single sample within the trapezoidal step-guard's
+        # 50 kW ceiling but still wildly above this inverter's actual rating
+        # would slip past update_energy_value() and silently bloat the
+        # accumulator. Reject upfront — keeps PV / InverterOut / Apparent
+        # integrators honest the same way the battery integrators are.
+        if power is not None and not is_plausible_power(power):
+            _LOGGER.debug(
+                "%s: implausible power reading (%.1f W); dropping sample",
+                self.entity_id or self._attr_unique_id,
+                power,
+            )
+            self._prev_power = None
+            self._prev_ts = time.monotonic()
+            self.async_write_ha_state()
+            return
+
         if power is not None:
             self.update_energy_value(power)
 
@@ -158,12 +175,29 @@ class DirectPV2EnergySensor(DirectEnergySensorBase):
     def _handle_coordinator_update(self) -> None:
         try:
             sec = self.data["qpigs2"]
-            power = float(sec["pv_current"]) * float(sec["pv_voltage"])
+            current = float(sec["pv_current"])
+            voltage = float(sec["pv_voltage"])
         except (KeyError, ValueError, TypeError):
-            power = None
+            self._prev_power = None
+            self._prev_ts = time.monotonic()
+            self.async_write_ha_state()
+            return
 
-        if power is not None:
-            self.update_energy_value(power)
+        power = current * voltage
+        if not is_plausible_power(power):
+            _LOGGER.debug(
+                "%s: implausible PV2 reading (I=%.2f A, V=%.2f V, P=%.1f W); dropping sample",
+                self.entity_id or self._attr_unique_id,
+                current,
+                voltage,
+                power,
+            )
+            self._prev_power = None
+            self._prev_ts = time.monotonic()
+            self.async_write_ha_state()
+            return
+
+        self.update_energy_value(power)
         self.async_write_ha_state()
 
 
@@ -235,7 +269,7 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
                 raise ValueError("out of plausible range")
         except (KeyError, ValueError, TypeError):
             self._prev_power = None
-            self._prev_ts = datetime.now()
+            self._prev_ts = time.monotonic()
             self.async_write_ha_state()
             return
         if current > 0:
@@ -285,7 +319,7 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
                 raise ValueError("out of plausible range")
         except (KeyError, ValueError, TypeError):
             self._prev_power = None
-            self._prev_ts = datetime.now()
+            self._prev_ts = time.monotonic()
             self.async_write_ha_state()
             return
         power = current * voltage
@@ -324,7 +358,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         )
         self._accumulated_energy_wh = 0.0
         self._prev_power = None
-        self._prev_ts = datetime.now()
+        self._prev_ts = time.monotonic()
         self._restored = False
         self._hass = hass
 
@@ -458,8 +492,8 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             self.async_write_ha_state()
             return
 
-        now = datetime.now()
-        elapsed_seconds = (now - self._prev_ts).total_seconds()
+        now = time.monotonic()
+        elapsed_seconds = now - self._prev_ts
 
         if self._prev_power is not None:
             energy_increment = (elapsed_seconds / 3600) * (self._prev_power + current_power) / 2

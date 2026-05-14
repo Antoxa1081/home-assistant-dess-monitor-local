@@ -38,7 +38,10 @@ class SerialCommandProtocol(asyncio.Protocol):
             raw_bytes = bytes(self.buffer.split(b"\r", 1)[0])
             ok, _ = validate_voltronic_response(raw_bytes)
             if not ok:
-                _LOGGER.warning(
+                # See elfin_tcp.py: single CRC mismatches are absorbed by the
+                # coordinator's retry/freeze; only the consecutive-failure
+                # warning at the coordinator level is escalated.
+                _LOGGER.debug(
                     "CRC mismatch for %s response (%d bytes): %r",
                     self.command,
                     len(raw_bytes),

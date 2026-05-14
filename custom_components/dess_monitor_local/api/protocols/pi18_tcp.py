@@ -56,7 +56,10 @@ class _Pi18FrameCollector(asyncio.Protocol):
             body = bytes(self.buffer.split(b"\r", 1)[0])
             ok, _ = validate_pi18_response(body)
             if not ok:
-                _LOGGER.warning(
+                # See elfin_tcp.py: single CRC mismatches are absorbed by the
+                # coordinator's retry/freeze; only the consecutive-failure
+                # warning at the coordinator level is escalated.
+                _LOGGER.debug(
                     "CRC mismatch for PI18 %s response (%d bytes): %r",
                     self.command or "?",
                     len(body),

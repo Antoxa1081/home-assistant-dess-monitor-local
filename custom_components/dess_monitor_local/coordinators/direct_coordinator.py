@@ -68,7 +68,16 @@ class DirectCoordinator(DataUpdateCoordinator):
 
     async def get_active_devices(self):
         device = self.config_entry.options.get(CONF_DEVICE, None)
-
+        if not device:
+            # No device URI configured (entry created but never finished setup,
+            # or options got wiped). Returning an empty list lets the
+            # coordinator complete without crashing in `_async_update_data`
+            # where dispatcher code does ``device.startswith(...)``.
+            _LOGGER.warning(
+                "No device URI configured for entry %s; nothing to poll",
+                self.config_entry.entry_id,
+            )
+            return []
         return [device]
 
     async def _async_update_data(self):

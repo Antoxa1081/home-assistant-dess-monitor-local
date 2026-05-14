@@ -15,7 +15,6 @@ class Hub:
         self._name = username
         self.direct_coordinator = direct_coordinator1
         self._id = username.lower()
-        print('init hub', username)
         self.items = []
         self.online = True
 
