@@ -161,11 +161,8 @@ class DirectEnumSensorBase(DirectTypedSensorBase):
         section = self.data.get(self.data_section, {})
         raw_value = section.get(self.data_key)
 
-        if raw_value is not None:
-            try:
-                self._attr_native_value = raw_value
-            except ValueError:
-                self._attr_native_value = None
+        if raw_value in self.options:
+            self._attr_native_value = raw_value
         else:
             self._attr_native_value = None
 
