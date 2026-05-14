@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from custom_components.dess_monitor_local import DirectCoordinator
 from custom_components.dess_monitor_local.api.commands.direct_commands import ParallelMode, ChargerSourcePriority, \
     OutputSourcePriority, ACInputVoltageRange, BatteryType, DeviceStatusBitsB7B0, \
+    PI18BatteryPowerDirection, PI18DCACPowerDirection, PI18LinePowerDirection, PI18MPPTStatus, \
     parse_device_status_bits_b7_b0
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
@@ -591,4 +592,136 @@ DIRECT_SENSORS = [
     DirectSCCBatteryVoltageSensor,
     DirectDeviceStatusSensor,
     DirectBatteryPowerSensor,
+]
+
+
+# ---------------------------------------------------------------------------
+# PI18-only sensors. Wired up *in addition* to DIRECT_SENSORS when the user
+# selected PI18 in the config flow (registered conditionally in sensor.py).
+# All read from the ``qpigs`` section because the PI18 decoder folds every
+# GS field — including the PI18-specific extras — into a single dict.
+# ---------------------------------------------------------------------------
+
+
+class DirectPV2InputPowerSensor(DirectWattSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="pv2_input_power",
+            sensor_suffix="pv2_input_power", name_suffix="PV2 Input Power",
+        )
+
+
+class DirectPV2InputVoltageSensor(DirectVoltageSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="pv2_input_voltage",
+            sensor_suffix="pv2_input_voltage", name_suffix="PV2 Input Voltage",
+        )
+
+
+class DirectPV2InputCurrentSensor(DirectCurrentSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="pv2_input_current",
+            sensor_suffix="pv2_input_current", name_suffix="PV2 Input Current",
+        )
+
+
+class DirectMPPT1TemperatureSensor(DirectTemperatureSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="mppt1_temperature",
+            sensor_suffix="mppt1_temperature", name_suffix="MPPT1 Temperature",
+        )
+
+
+class DirectMPPT2TemperatureSensor(DirectTemperatureSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="mppt2_temperature",
+            sensor_suffix="mppt2_temperature", name_suffix="MPPT2 Temperature",
+        )
+
+
+class DirectSCC2BatteryVoltageSensor(DirectVoltageSensorBase):
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="scc2_battery_voltage",
+            sensor_suffix="scc2_battery_voltage", name_suffix="SCC2 Battery Voltage",
+        )
+
+
+class DirectMPPT1StatusSensor(DirectEnumSensorBase):
+    enum_class = PI18MPPTStatus
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="mppt1_status",
+            sensor_suffix="mppt1_status", name_suffix="MPPT1 Status",
+        )
+
+
+class DirectMPPT2StatusSensor(DirectEnumSensorBase):
+    enum_class = PI18MPPTStatus
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="mppt2_status",
+            sensor_suffix="mppt2_status", name_suffix="MPPT2 Status",
+        )
+
+
+class DirectBatteryPowerDirectionSensor(DirectEnumSensorBase):
+    enum_class = PI18BatteryPowerDirection
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="battery_power_direction",
+            sensor_suffix="battery_power_direction", name_suffix="Battery Power Direction",
+        )
+
+
+class DirectDCACPowerDirectionSensor(DirectEnumSensorBase):
+    enum_class = PI18DCACPowerDirection
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="dcac_power_direction",
+            sensor_suffix="dcac_power_direction", name_suffix="DC-AC Power Direction",
+        )
+
+
+class DirectLinePowerDirectionSensor(DirectEnumSensorBase):
+    enum_class = PI18LinePowerDirection
+
+    def __init__(self, inverter_device: InverterDevice, coordinator: DirectCoordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qpigs", data_key="line_power_direction",
+            sensor_suffix="line_power_direction", name_suffix="Line Power Direction",
+        )
+
+
+PI18_SENSORS = [
+    DirectPV2InputPowerSensor,
+    DirectPV2InputVoltageSensor,
+    DirectPV2InputCurrentSensor,
+    DirectMPPT1TemperatureSensor,
+    DirectMPPT2TemperatureSensor,
+    DirectSCC2BatteryVoltageSensor,
+    DirectMPPT1StatusSensor,
+    DirectMPPT2StatusSensor,
+    DirectBatteryPowerDirectionSensor,
+    DirectDCACPowerDirectionSensor,
+    DirectLinePowerDirectionSensor,
 ]

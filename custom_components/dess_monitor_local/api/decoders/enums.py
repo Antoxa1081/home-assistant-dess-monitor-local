@@ -62,6 +62,34 @@ class OperatingMode(Enum):
     Fault = "F"
 
 
+# PI18 GS fields V (mppt1) and W (mppt2): charger controller state.
+class PI18MPPTStatus(Enum):
+    Abnormal = "0"
+    NotCharging = "1"
+    Charging = "2"
+
+
+# PI18 GS field Y: direction of energy flow on the battery bus.
+class PI18BatteryPowerDirection(Enum):
+    Idle = "0"
+    Charging = "1"
+    Discharging = "2"
+
+
+# PI18 GS field Z: direction of DC↔AC conversion inside the inverter.
+class PI18DCACPowerDirection(Enum):
+    Idle = "0"
+    ACtoDC = "1"
+    DCtoAC = "2"
+
+
+# PI18 GS field a: direction of energy flow on the grid line.
+class PI18LinePowerDirection(Enum):
+    Idle = "0"
+    Input = "1"
+    Output = "2"
+
+
 class BatteryTypeSetting(Enum):
     AGM = "PBT00"
     FLOODED = "PBT01"

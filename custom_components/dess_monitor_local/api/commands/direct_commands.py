@@ -21,6 +21,10 @@ from ..decoders.enums import (
     OutputSourcePriority,
     OutputSourcePrioritySetting,
     ParallelMode,
+    PI18BatteryPowerDirection,
+    PI18DCACPowerDirection,
+    PI18LinePowerDirection,
+    PI18MPPTStatus,
     parse_device_status_bits_b10_b8,
     parse_device_status_bits_b7_b0,
 )

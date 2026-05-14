@@ -3,7 +3,12 @@
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from custom_components.dess_monitor_local.sensors.direct_sensor import DIRECT_SENSORS, generate_qpiri_sensors
+from custom_components.dess_monitor_local.const import CONF_PROTOCOL, PROTOCOL_PI18
+from custom_components.dess_monitor_local.sensors.direct_sensor import (
+    DIRECT_SENSORS,
+    PI18_SENSORS,
+    generate_qpiri_sensors,
+)
 from . import HubConfigEntry
 from .sensors.direct_energy_sensors import DirectInverterOutputEnergySensor, DirectPV2EnergySensor, \
     DirectPVEnergySensor, DirectBatteryInEnergySensor, DirectBatteryOutEnergySensor, DirectBatteryStateOfChargeSensor
@@ -17,6 +22,7 @@ async def async_setup_entry(
     """Add sensors for passed config_entry in HA."""
     hub = config_entry.runtime_data
     new_devices = []
+    is_pi18 = config_entry.options.get(CONF_PROTOCOL) == PROTOCOL_PI18
 
     for item in hub.items:
         new_devices.extend(create_direct_sensors(item, hub.direct_coordinator))
@@ -29,6 +35,14 @@ async def async_setup_entry(
             DirectBatteryOutEnergySensor(item, hub.direct_coordinator),
             DirectBatteryStateOfChargeSensor(item, hub.direct_coordinator, hass),
         ])
+        if is_pi18:
+            # PI18 GS response exposes a second MPPT, two temperatures, and
+            # several direction flags that don't exist in Voltronic PI30.
+            # Only wire them up when the user is actually on PI18 — keeps the
+            # entity list clean for PI30 deployments.
+            new_devices.extend(
+                sensor_cls(item, hub.direct_coordinator) for sensor_cls in PI18_SENSORS
+            )
 
     if new_devices:
         async_add_entities(new_devices)

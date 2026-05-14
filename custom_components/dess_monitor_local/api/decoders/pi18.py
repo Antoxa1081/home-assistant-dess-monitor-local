@@ -29,7 +29,20 @@ from .enums import (
     ChargerSourcePriority,
     OperatingMode,
     OutputSourcePriority,
+    PI18BatteryPowerDirection,
+    PI18DCACPowerDirection,
+    PI18LinePowerDirection,
+    PI18MPPTStatus,
 )
+
+
+def _enum_name(enum_cls, code: str, default: str = "Idle") -> str:
+    """Map a numeric code string to ``enum_cls(code).name``; on miss return
+    the supplied default so HA's ENUM validation never sees a stray code."""
+    try:
+        return enum_cls(code).name
+    except ValueError:
+        return default
 
 
 # Logical command name (shared across protocols) → PI18 native command body.
@@ -138,6 +151,12 @@ def _decode_gs(tokens: list[str]) -> dict[str, Any]:
     pv_v = pv_v_int / 10.0
     pv_input_current = pv_p_int / pv_v if pv_v else 0.0
 
+    # Same derivation for the second PV input.
+    pv2_v_int = _safe_int(raw["_pv2_input_voltage"])
+    pv2_p_int = _safe_int(raw["_pv2_input_power"])
+    pv2_v = pv2_v_int / 10.0
+    pv2_input_current = pv2_p_int / pv2_v if pv2_v else 0.0
+
     # PI18 status bits aren't directly exposed; mirror SMG-II's "running,
     # AC-charging" baseline so any sensor that reads them gets a constant
     # rather than KeyError.
@@ -166,6 +185,26 @@ def _decode_gs(tokens: list[str]) -> dict[str, Any]:
         "eeprom_version": "00",
         "pv_charging_power": f"{pv_p_int:05d}",
         "device_status_bits_b10_b8": status_b10_b8,
+        # PI18-only fields. Absent in PI30 responses — the corresponding
+        # sensors are only wired up when the user has chosen PI18 in the
+        # config flow, so PI30 deployments don't see ghost entities.
+        "pv2_input_power": f"{pv2_p_int:05d}",
+        "pv2_input_voltage": f"{pv2_v:.1f}",
+        "pv2_input_current": f"{pv2_input_current:.1f}",
+        "mppt1_temperature": f"{_safe_int(raw['_mppt1_temp']):.1f}",
+        "mppt2_temperature": f"{_safe_int(raw['_mppt2_temp']):.1f}",
+        "scc2_battery_voltage": f"{_safe_int(raw['_battery_voltage_scc2']) / 10.0:.2f}",
+        "mppt1_status": _enum_name(PI18MPPTStatus, raw["_mppt1_status"], "Abnormal"),
+        "mppt2_status": _enum_name(PI18MPPTStatus, raw["_mppt2_status"], "Abnormal"),
+        "battery_power_direction": _enum_name(
+            PI18BatteryPowerDirection, raw["_battery_power_dir"], "Idle"
+        ),
+        "dcac_power_direction": _enum_name(
+            PI18DCACPowerDirection, raw["_dcac_power_dir"], "Idle"
+        ),
+        "line_power_direction": _enum_name(
+            PI18LinePowerDirection, raw["_line_power_dir"], "Idle"
+        ),
     }
 
 
