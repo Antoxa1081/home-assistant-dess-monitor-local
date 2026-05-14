@@ -20,6 +20,51 @@ from custom_components.dess_monitor_local.sensors.direct_sensor import DirectTyp
 _LOGGER = logging.getLogger(__name__)
 
 
+# Battery chemistry / connection presets driving the SoC algorithm.
+# Keep names in sync with select.BATTERY_MODE_* constants — duplicated here
+# rather than imported to keep this module free of select-platform deps.
+BATTERY_MODE_LI_VOLTAGE = "Lithium (Voltage)"
+BATTERY_MODE_LI_BMS = "Lithium (BMS)"
+BATTERY_MODE_LEAD_ACID = "Lead-acid"
+
+# Per-mode tuning. Since the integrator now operates on Ah (Coulomb
+# counting) instead of Wh, ``charge_eff`` reflects *Coulombic* efficiency:
+# how much charge actually stays in the cells per Ah pushed in. LFP is
+# nearly lossless at the Coulomb level (~99%); voltage hysteresis between
+# charge and discharge curves accounts for most of the LFP round-trip loss
+# but it's a *voltage* effect, not a Coulomb effect, so it disappears here.
+# Lead-acid loses real Coulombs to gassing and self-discharge — hence the
+# lower factor. ``tail_c_rate`` is the absorption-tail current threshold
+# as a fraction of nominal capacity (0.05C = 5 A on a 100 Ah bank).
+_CHEMISTRY_PARAMS = {
+    BATTERY_MODE_LI_VOLTAGE: {
+        "charge_eff": 0.99,
+        "discharge_eff": 1.0,
+        "tail_c_rate": 0.05,
+        "hysteresis_v": 0.2,
+    },
+    BATTERY_MODE_LEAD_ACID: {
+        "charge_eff": 0.90,
+        "discharge_eff": 0.95,
+        "tail_c_rate": 0.02,
+        "hysteresis_v": 0.5,
+    },
+    # BMS mode bypasses the integrator entirely — params unused.
+    BATTERY_MODE_LI_BMS: {
+        "charge_eff": 1.0,
+        "discharge_eff": 1.0,
+        "tail_c_rate": 0.05,
+        "hysteresis_v": 0.2,
+    },
+}
+
+# Snap-to-100% only fires after this many consecutive ticks at/above the
+# sync voltage. With the default 10s poll interval that's ~30 sec, which
+# safely filters transient voltage spikes from load steps or parser glitches
+# while staying short enough that real absorption phase always trips it.
+_SYNC_DEBOUNCE_TICKS = 3
+
+
 class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -331,14 +376,14 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
 
 class BatteryStoredData(ExtraStoredData):
 
-    def __init__(self, native_value: float | None, accumulated_energy_wh: float):
+    def __init__(self, native_value: float | None, accumulated_charge_ah: float):
         self.native_value = native_value
-        self.accumulated_energy_wh = accumulated_energy_wh
+        self.accumulated_charge_ah = accumulated_charge_ah
 
     def as_dict(self) -> dict:
         return {
             "native_value": self.native_value,
-            "accumulated_energy_wh": self.accumulated_energy_wh,
+            "accumulated_charge_ah": self.accumulated_charge_ah,
         }
 
 
@@ -356,20 +401,59 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             sensor_suffix="battery_state_of_charge",
             name_suffix="Battery State of Charge",
         )
-        self._accumulated_energy_wh = 0.0
-        self._prev_power = None
+        # Coulomb counter: accumulated *charge* in Ah, not energy in Wh.
+        # SoC% = (_accumulated_charge_ah / _battery_capacity_ah) × 100.
+        self._accumulated_charge_ah = 0.0
+        # Latest signed current (A): + charging, − discharging.
+        self._prev_current_a = None
+        # Efficiency-adjusted twin of _prev_current_a used by the integrator.
+        # Kept separate so the raw value stays available for diagnostics.
+        self._prev_effective_current_a = None
         self._prev_ts = time.monotonic()
         self._restored = False
         self._hass = hass
 
         device_slug = slugify(self._inverter_device.name)
-        self._capacity_entity_id = f"number.{device_slug}_vsoc_battery_capacity"
-        self._battery_capacity_wh = None
+        # The "_ah" suffix matches the new BatteryCapacityNumber name
+        # "vSoC Battery Capacity (Ah)" — HA slugifies that to
+        # "vsoc_battery_capacity_ah". The legacy Wh-based entity at
+        # "{slug}_vsoc_battery_capacity" stays orphan after upgrade and
+        # is not tracked here.
+        self._capacity_entity_id = f"number.{device_slug}_vsoc_battery_capacity_ah"
+        self._sync_voltage_entity_id = (
+            f"number.{device_slug}_vsoc_full_charge_sync_voltage"
+        )
+        self._battery_mode_entity_id = f"select.{device_slug}_vsoc_battery_mode"
+        self._battery_capacity_ah = None
+        # User-defined override for the SoC snap-to-100% voltage. 0 = use
+        # inverter's bulk_charging_voltage. See FullChargeSyncVoltageNumber
+        # for the rationale (LiFePO4 chemistries reach 100% below the
+        # inverter's bulk target).
+        self._full_charge_sync_voltage = 0.0
+        # Active chemistry preset; falls back to the LFP-voltage strategy
+        # whenever the select hasn't restored yet — that matches existing
+        # behavior so the upgrade is a no-op for users who don't touch
+        # the mode dropdown.
+        self._battery_mode = BATTERY_MODE_LI_VOLTAGE
+        # Debounce counter for the voltage-based snap (trigger A). Counts
+        # consecutive ticks at/above sync_voltage; resets when V falls
+        # below sync_voltage − hysteresis_v.
+        self._at_sync_ticks = 0
 
         async_track_state_change_event(
             self._hass,
             [self._capacity_entity_id],
             self._handle_battery_capacity_change,
+        )
+        async_track_state_change_event(
+            self._hass,
+            [self._sync_voltage_entity_id],
+            self._handle_sync_voltage_change,
+        )
+        async_track_state_change_event(
+            self._hass,
+            [self._battery_mode_entity_id],
+            self._handle_battery_mode_change,
         )
 
     async def async_added_to_hass(self) -> None:
@@ -378,13 +462,22 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             data = last_extra.as_dict()
             restored_value = data.get("native_value")
             self._attr_native_value = float(restored_value) if restored_value is not None else 100.0
-            self._accumulated_energy_wh = float(data.get("accumulated_energy_wh", 0))
+            # Pre-Ah saves used "accumulated_energy_wh" — that value is in
+            # Wh, not Ah, so it's not meaningfully restorable. Fall back to
+            # 0 and let the next full-charge snap re-anchor the integrator.
+            self._accumulated_charge_ah = float(data.get("accumulated_charge_ah", 0))
         else:
             self._attr_native_value = 100.0
-            self._accumulated_energy_wh = 0.0
+            self._accumulated_charge_ah = 0.0
 
         state = self._hass.states.get(self._capacity_entity_id)
         self._update_battery_capacity_from_state(state)
+
+        sync_state = self._hass.states.get(self._sync_voltage_entity_id)
+        self._update_sync_voltage_from_state(sync_state)
+
+        mode_state = self._hass.states.get(self._battery_mode_entity_id)
+        self._update_battery_mode_from_state(mode_state)
 
         self._restored = True
         await super().async_added_to_hass()
@@ -393,16 +486,18 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         """Сохранение данных при выгрузке / рестарте."""
         return BatteryStoredData(
             self._attr_native_value,
-            self._accumulated_energy_wh,
+            self._accumulated_charge_ah,
         )
 
     @property
     def available(self) -> bool:
-        # Доступен только если восстановлен и емкость задана положительно
-        bulk_voltage = self.get_bulk_charging_voltage()
+        # Доступен только если восстановлен и емкость задана положительно.
+        # Допустимый порог snap-to-100% есть либо от инвертора (bulk), либо
+        # от пользовательского override — нужно хоть что-то одно.
+        sync_voltage = self.get_full_charge_sync_voltage()
         return super().available and self._restored and (
-                self._battery_capacity_wh is not None and self._battery_capacity_wh > 0) and (
-                bulk_voltage is not None)
+                self._battery_capacity_ah is not None and self._battery_capacity_ah > 0) and (
+                sync_voltage is not None)
 
     @callback
     def _handle_battery_capacity_change(self, event):
@@ -415,23 +510,23 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         # _accumulated_energy_wh — сенсор просто станет недоступен, пока
         # ёмкость не появится.
         if state is None or state.state in ("unknown", "unavailable", None):
-            self._battery_capacity_wh = None
+            self._battery_capacity_ah = None
             self.async_write_ha_state()
             return
         try:
             value = float(state.state)
         except (ValueError, TypeError):
-            self._battery_capacity_wh = None
+            self._battery_capacity_ah = None
             self.async_write_ha_state()
             return
 
         if value <= 0:
-            self._battery_capacity_wh = None
+            self._battery_capacity_ah = None
             self.async_write_ha_state()
             return
 
-        old_capacity = self._battery_capacity_wh
-        self._battery_capacity_wh = value
+        old_capacity = self._battery_capacity_ah
+        self._battery_capacity_ah = value
 
         if old_capacity is None:
             # Ёмкость появилась впервые (или после restart). Сохраняем SoC в
@@ -439,21 +534,21 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             # чтобы не потерять значение после перезапуска HA.
             if self._attr_native_value is not None:
                 soc_fraction = max(0.0, min(1.0, float(self._attr_native_value) / 100.0))
-                self._accumulated_energy_wh = soc_fraction * value
+                self._accumulated_charge_ah = soc_fraction * value
             else:
-                self._accumulated_energy_wh = value
+                self._accumulated_charge_ah = value
                 self._attr_native_value = 100.0
         else:
             # Пользователь изменил ёмкость батареи — сохраняем процент SoC
             # (пропорционально пересчитываем накопленную энергию).
             if old_capacity > 0:
-                soc_fraction = self._accumulated_energy_wh / old_capacity
+                soc_fraction = self._accumulated_charge_ah / old_capacity
             elif self._attr_native_value is not None:
                 soc_fraction = float(self._attr_native_value) / 100.0
             else:
                 soc_fraction = 1.0
             soc_fraction = max(0.0, min(1.0, soc_fraction))
-            self._accumulated_energy_wh = soc_fraction * value
+            self._accumulated_charge_ah = soc_fraction * value
             self._attr_native_value = soc_fraction * 100.0
 
         self.async_write_ha_state()
@@ -468,6 +563,50 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             pass
         return None
 
+    def get_full_charge_sync_voltage(self) -> float | None:
+        """Threshold at which SoC snaps to 100%.
+
+        User override (FullChargeSyncVoltageNumber > 0) takes precedence,
+        otherwise we fall back to the inverter's configured bulk voltage.
+        Returns None only when neither source is available — that's when
+        the SoC sensor reports unavailable.
+        """
+        if self._full_charge_sync_voltage > 0:
+            return self._full_charge_sync_voltage
+        return self.get_bulk_charging_voltage()
+
+    @callback
+    def _handle_sync_voltage_change(self, event):
+        state = event.data.get("new_state")
+        self._update_sync_voltage_from_state(state)
+
+    def _update_sync_voltage_from_state(self, state):
+        if state is None or state.state in ("unknown", "unavailable", None):
+            self._full_charge_sync_voltage = 0.0
+            return
+        try:
+            value = float(state.state)
+        except (ValueError, TypeError):
+            self._full_charge_sync_voltage = 0.0
+            return
+        self._full_charge_sync_voltage = max(0.0, value)
+
+    @callback
+    def _handle_battery_mode_change(self, event):
+        state = event.data.get("new_state")
+        self._update_battery_mode_from_state(state)
+
+    def _update_battery_mode_from_state(self, state):
+        if state is None or state.state not in _CHEMISTRY_PARAMS:
+            # Keep current mode; don't flip back to default on transient
+            # 'unknown' states during HA restart.
+            return
+        if state.state != self._battery_mode:
+            # Reset the snap debounce so a mode flip doesn't carry over
+            # stale "near sync" state from the previous chemistry.
+            self._at_sync_ticks = 0
+        self._battery_mode = state.state
+
     def get_floating_charging_voltage(self) -> float | None:
         try:
             qpiri = self.data.get("qpiri", {})
@@ -478,16 +617,48 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             pass
         return None
 
-    def update_soc(self, current_power: float, current_voltage: float):
-        if self._battery_capacity_wh is None or self._battery_capacity_wh <= 0:
-            # Не считаем, если емкость не задана
+    def update_soc(self, signed_current_a: float, current_voltage: float):
+        """Coulomb-counting SoC update.
+
+        Args:
+            signed_current_a: + when charging, − when discharging, A.
+            current_voltage: terminal voltage for the snap triggers.
+        """
+        if self._battery_capacity_ah is None or self._battery_capacity_ah <= 0:
+            # Емкость не задана — сенсор unavailable.
             self._attr_native_value = None
             self.async_write_ha_state()
             return
 
-        bulk_voltage = self.get_bulk_charging_voltage()
+        max_capacity_ah = self._battery_capacity_ah
+        params = _CHEMISTRY_PARAMS[self._battery_mode]
+
+        # ---------- BMS mirror branch ---------------------------------
+        # COMM-LI: QPIGS.battery_capacity carries the BMS-reported SoC %.
+        # Use it verbatim and keep the integrator state aligned with it —
+        # mode switch back to voltage tracking then starts from a sane
+        # Coulomb baseline instead of stale junk.
+        if self._battery_mode == BATTERY_MODE_LI_BMS:
+            bms_soc = self._read_bms_soc()
+            if bms_soc is not None:
+                self._accumulated_charge_ah = (bms_soc / 100.0) * max_capacity_ah
+                # Null the effective-current twin so the first tick after
+                # the user flips back to voltage mode skips the trapezoid
+                # (no stale baseline → no spurious step).
+                self._prev_current_a = signed_current_a
+                self._prev_effective_current_a = None
+                self._prev_ts = time.monotonic()
+                self._at_sync_ticks = 0
+                self._attr_native_value = bms_soc
+                self.async_write_ha_state()
+                return
+            # BMS read miss — fall through to integrator so the sensor
+            # doesn't go dark on a transient handshake glitch.
+
+        # ---------- Voltage-based branch (Lithium voltage / Lead-acid) --
+        sync_voltage = self.get_full_charge_sync_voltage()
         floating_voltage = self.get_floating_charging_voltage()
-        if bulk_voltage is None:
+        if sync_voltage is None:
             self._attr_native_value = None
             self.async_write_ha_state()
             return
@@ -495,31 +666,85 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         now = time.monotonic()
         elapsed_seconds = now - self._prev_ts
 
-        if self._prev_power is not None:
-            energy_increment = (elapsed_seconds / 3600) * (self._prev_power + current_power) / 2
-            self._accumulated_energy_wh += energy_increment
+        # Coulombic efficiency. LFP is nearly lossless at the Coulomb
+        # level (≈0.99 charge / 1.0 discharge); lead loses real charge
+        # to gassing on the charge side and to self-discharge on the
+        # discharge side. Keeping the factors split lets the integrator
+        # stay signed and symmetric.
+        if signed_current_a >= 0:
+            effective_current_a = signed_current_a * params["charge_eff"]
+        else:
+            effective_current_a = signed_current_a / params["discharge_eff"]
 
-        self._prev_power = current_power
+        if self._prev_effective_current_a is not None:
+            # Trapezoidal Coulomb count: ΔAh = avg(I) × Δt (hours).
+            charge_increment = (elapsed_seconds / 3600) * (
+                self._prev_effective_current_a + effective_current_a
+            ) / 2
+            self._accumulated_charge_ah += charge_increment
+
+        self._prev_current_a = signed_current_a
+        self._prev_effective_current_a = effective_current_a
         self._prev_ts = now
 
-        max_capacity = self._battery_capacity_wh
+        # ---------- Snap triggers --------------------------------------
+        # Trigger A (debounced): terminal voltage held at/above sync for
+        # _SYNC_DEBOUNCE_TICKS in a row, with chemistry-specific hysteresis
+        # below to reset the counter. Filters transient peaks.
+        hysteresis_v = params["hysteresis_v"]
+        if current_voltage >= sync_voltage:
+            self._at_sync_ticks += 1
+        elif current_voltage < (sync_voltage - hysteresis_v):
+            self._at_sync_ticks = 0
+        # In the dead-zone (sync − hysteresis ≤ V < sync) hold the counter.
 
-        if current_voltage >= bulk_voltage or (
-                current_voltage >= floating_voltage and 0 < current_power <= 2 * bulk_voltage):
+        snap_voltage_armed = self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS
+
+        # Trigger B: float-phase absorption tail. Tail current threshold
+        # is now in Amperes directly — capacity_ah × tail_c_rate gives a
+        # real "0.05C" value (5 A on a 100 Ah bank). Much more meaningful
+        # than the legacy 2×bulk_voltage power heuristic.
+        tail_current_a = max_capacity_ah * params["tail_c_rate"]
+        snap_tail_armed = (
+            floating_voltage is not None
+            and current_voltage >= floating_voltage
+            and 0 < signed_current_a <= tail_current_a
+        )
+
+        if snap_voltage_armed or snap_tail_armed:
             soc_percent = 100.0
-            self._accumulated_energy_wh = max_capacity
+            self._accumulated_charge_ah = max_capacity_ah
         else:
-            if self._accumulated_energy_wh < 0:
-                self._accumulated_energy_wh = 0.0
-            elif self._accumulated_energy_wh > max_capacity:
-                self._accumulated_energy_wh = max_capacity
+            if self._accumulated_charge_ah < 0:
+                self._accumulated_charge_ah = 0.0
+            elif self._accumulated_charge_ah > max_capacity_ah:
+                self._accumulated_charge_ah = max_capacity_ah
 
-            soc_percent = (self._accumulated_energy_wh / max_capacity) * 100
+            soc_percent = (self._accumulated_charge_ah / max_capacity_ah) * 100
 
         soc_percent = max(0.0, min(100.0, soc_percent))
 
         self._attr_native_value = soc_percent
         self.async_write_ha_state()
+
+    def _read_bms_soc(self) -> float | None:
+        """Read battery_capacity (BMS-sourced SoC %) from the latest qpigs.
+
+        Returns None when the value is missing, unparseable, or sentinel
+        (some inverters emit 0 or 100 as placeholders before the BMS
+        finishes handshake).
+        """
+        try:
+            section = self.data.get(self.data_section, {})
+            raw = section.get("battery_capacity")
+            if raw is None or raw == "":
+                return None
+            value = float(raw)
+            if math.isnan(value):
+                return None
+            return max(0.0, min(100.0, value))
+        except (KeyError, ValueError, TypeError):
+            return None
 
     @property
     def native_value(self):
@@ -532,13 +757,12 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             current_voltage = float(section.get("battery_voltage", 0))
             charging_current = float(section.get("battery_charging_current", 0))
             discharging_current = float(section.get("battery_discharge_current", 0))
-            power = 0.0
-            if charging_current > 0:
-                power = charging_current * current_voltage
-            elif discharging_current > 0:
-                power = -discharging_current * current_voltage
+            # Signed: + charging, − discharging. Both fields shouldn't be
+            # non-zero simultaneously per protocol — but if they are, the
+            # net direction is what we want.
+            signed_current_a = charging_current - discharging_current
 
-            self.update_soc(power, current_voltage)
+            self.update_soc(signed_current_a, current_voltage)
         except (KeyError, ValueError, TypeError):
             self._attr_native_value = None
             self.async_write_ha_state()

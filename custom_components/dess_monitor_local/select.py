@@ -2,6 +2,7 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import HubConfigEntry
@@ -10,6 +11,12 @@ from custom_components.dess_monitor_local.api.commands.direct_commands import se
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 from custom_components.dess_monitor_local.hub import InverterDevice
+
+
+BATTERY_MODE_LI_VOLTAGE = "Lithium (Voltage)"
+BATTERY_MODE_LI_BMS = "Lithium (BMS)"
+BATTERY_MODE_LEAD_ACID = "Lead-acid"
+BATTERY_MODES = (BATTERY_MODE_LI_VOLTAGE, BATTERY_MODE_LI_BMS, BATTERY_MODE_LEAD_ACID)
 
 
 #
@@ -32,9 +39,50 @@ async def async_setup_entry(
         new_devices.append(InverterOutputPrioritySelect(item, coordinator))
         new_devices.append(InverterChargeSourcePrioritySelect(item, coordinator))
         new_devices.append(InverterMaxUtilityChargingCurrentNumber(item, coordinator))
+        new_devices.append(BatteryModeSelect(item))
 
     if new_devices:
         async_add_entities(new_devices)
+
+
+class BatteryModeSelect(SelectEntity, RestoreEntity):
+    """User-selected battery chemistry / connection preset.
+
+    Drives the SoC algorithm strategy:
+      - "Lithium (Voltage)" — LFP-style voltage snap + Coulomb counter,
+        eff=0.97, tail=0.05C, hysteresis=0.2V
+      - "Lithium (BMS)"     — mirror battery_capacity field (BMS source)
+      - "Lead-acid"         — wider hysteresis 0.5V, eff=0.85/0.90, tail=0.02C
+    """
+
+    _attr_options = list(BATTERY_MODES)
+    _attr_icon = "mdi:battery-sync"
+
+    def __init__(self, inverter_device: InverterDevice):
+        self._inverter_device = inverter_device
+        self._attr_unique_id = f"{inverter_device.inverter_id}_battery_mode"
+        self._attr_name = f"{inverter_device.name} vSoC Battery Mode"
+        # Default preserves the existing (LFP voltage-based) behavior so
+        # existing users don't see their SoC sensor change after upgrade.
+        self._attr_current_option = BATTERY_MODE_LI_VOLTAGE
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, inverter_device.inverter_id)},
+            name=inverter_device.name,
+            manufacturer="ESS",
+            model=inverter_device.inverter_id,
+            sw_version=inverter_device.firmware_version,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state and state.state in self._attr_options:
+            self._attr_current_option = state.state
+
+    async def async_select_option(self, option: str) -> None:
+        if option in self._attr_options:
+            self._attr_current_option = option
+            self.async_write_ha_state()
 
 
 class SelectBase(CoordinatorEntity, SelectEntity):
