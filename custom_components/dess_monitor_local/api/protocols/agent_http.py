@@ -139,12 +139,35 @@ def split_raw_by_command(
     if command == "QPIGS":
         # Exclude prefixed keys *and* the QPIRI name-set, so QPIGS-only
         # sensors don't accidentally pick up config readings.
-        return {
+        qpigs = {
             k: v
             for k, v in raw.items()
             if not k.startswith(("qpiri.", "qmod.", "qpigs2."))
             and k not in _QPIRI_FIELD_NAMES
         }
+        # Agent ships SMG-II-style signed ``battery_current`` (+ charging,
+        # − discharging). The rest of the integration is Voltronic-shaped
+        # and expects the two split fields, so derive them when the
+        # agent didn't already provide them. Same with ``battery_power``
+        # → infer it back if voltage is known and split currents are
+        # absent. Idempotent: if split fields already exist, leave them.
+        if "battery_current" in qpigs and (
+            "battery_charging_current" not in qpigs
+            or "battery_discharge_current" not in qpigs
+        ):
+            try:
+                i_signed = float(qpigs["battery_current"])
+            except (TypeError, ValueError):
+                i_signed = 0.0
+            qpigs.setdefault(
+                "battery_charging_current",
+                f"{max(0.0, i_signed):.2f}",
+            )
+            qpigs.setdefault(
+                "battery_discharge_current",
+                f"{max(0.0, -i_signed):.2f}",
+            )
+        return qpigs
 
     for token, prefix in (
         ("QMOD", "qmod."),
