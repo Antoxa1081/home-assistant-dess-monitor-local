@@ -17,6 +17,7 @@ import serial_asyncio_fast as serial_asyncio
 
 from ..crc import validate_pi18_response
 from ..decoders.pi18 import build_request_frame, decode_pi18_response
+from ...frame_log import record as _record_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class _Pi18FrameCollector(asyncio.Protocol):
         if b"\r" in self.buffer:
             body = bytes(self.buffer.split(b"\r", 1)[0])
             ok, _ = validate_pi18_response(body)
+            _record_frame(f"PI18:{self.command or '?'}", body, ok)
             if not ok:
                 # See elfin_tcp.py: single CRC mismatches are absorbed by the
                 # coordinator's retry/freeze; only the consecutive-failure

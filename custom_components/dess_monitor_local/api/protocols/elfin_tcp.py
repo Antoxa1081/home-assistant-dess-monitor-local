@@ -12,6 +12,7 @@ import asyncio
 import logging
 
 from ..crc import crc16_voltronic, validate_voltronic_response
+from ...frame_log import record as _record_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class ElfinTCPProtocol(asyncio.Protocol):
         if b"\r" in self.buffer or b"\n" in self.buffer:
             raw_bytes = bytes(self.buffer.split(b"\r", 1)[0])
             ok, _ = validate_voltronic_response(raw_bytes)
+            _record_frame(self.command, raw_bytes, ok)
             if not ok:
                 # Single-frame CRC mismatches are routine on noisy RS232 lines;
                 # the coordinator's retry + freeze logic absorbs them. Only the

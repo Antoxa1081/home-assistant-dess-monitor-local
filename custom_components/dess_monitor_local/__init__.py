@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 from . import hub
 from custom_components.dess_monitor_local.api.commands.direct_command_queue import CommandQueue
+from custom_components.dess_monitor_local import frame_log
 
 # List of platforms to support. There should be a matching .py file for each,
 # eg <cover.py> and <sensor.py>
@@ -46,6 +47,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # needs to unload itself, and remove callbacks. See the classes for further
     # details
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # Drain the command queue's worker task on unload so HA doesn't log
+    # "Task was destroyed but it is pending!" when the worker is mid-await
+    # at shutdown. Pop only after unload_platforms so any platform-level
+    # teardown that still tries to enqueue completes against a live queue.
+    queue = hass.data.pop("dess_monitor_local_queue", None)
+    if queue is not None:
+        await queue.stop()
+    # Drop the diagnostic frame buffer too — keeps memory clean across
+    # reloads and avoids leaking stale frames from a previous device URI.
+    frame_log.clear()
 
     return unload_ok
 

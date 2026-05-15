@@ -18,6 +18,15 @@ class CommandQueue:
     async def stop(self):
         if self._worker_task:
             self._worker_task.cancel()
+            # Await the cancellation so HA's event loop sees the task
+            # finish gracefully — otherwise we get "Task was destroyed
+            # but it is pending!" warnings on integration reload / HA
+            # shutdown when the worker is mid-``await fn()`` and the
+            # future under it gets cancelled.
+            try:
+                await self._worker_task
+            except asyncio.CancelledError:
+                pass
             self._worker_task = None
 
     async def enqueue(self, fn: Callable[[], Awaitable[Any]], desc: str = "") -> Any:

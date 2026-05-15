@@ -137,8 +137,6 @@ class DirectCoordinator(DataUpdateCoordinator):
                 async def fetch_device_data(device):
                     qpigs = await fetch_with_retry(device, 'QPIGS', 'qpigs')
                     qpiri = await fetch_with_retry(device, 'QPIRI', 'qpiri')
-                    # qpigs2 = await get_direct_data(device, 'QPIGS2')
-                    # qpiri = await get_direct_data(device, 'QPIRI')
                     return device, {
                         "timestamp": datetime.now(),
                         'qpigs': qpigs,
