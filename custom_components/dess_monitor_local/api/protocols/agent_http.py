@@ -77,22 +77,76 @@ async def fetch_agent_snapshot(
         return None
 
 
+# Canonical names of QPIRI (config / rated settings) fields. The agent
+# emits these alongside live QPIGS readings in a single flat dict — we
+# use this set to route them to the qpiri bucket when no explicit
+# ``qpiri.`` prefix is present. Keep in sync with the QPIRI_SENSOR_MAPPING
+# keys in sensors/direct_sensor.py.
+_QPIRI_FIELD_NAMES = frozenset({
+    "rated_grid_voltage",
+    "rated_input_current",
+    "rated_ac_output_voltage",
+    "rated_output_frequency",
+    "rated_output_current",
+    "rated_output_apparent_power",
+    "rated_output_active_power",
+    "rated_battery_voltage",
+    "low_battery_to_ac_bypass_voltage",
+    "shut_down_battery_voltage",
+    "bulk_charging_voltage",
+    "float_charging_voltage",
+    "battery_type",
+    "max_utility_charging_current",
+    "max_charging_current",
+    "ac_input_voltage_range",
+    "output_source_priority",
+    "charger_source_priority",
+    "parallel_max_number",
+    "parallel_mode",
+    "high_battery_voltage_to_battery_mode",
+    "solar_work_condition_in_parallel",
+    "solar_max_charging_power_auto_adjust",
+    "rated_battery_capacity",
+})
+
+
 def split_raw_by_command(
     raw: dict[str, str], command: str
 ) -> dict[str, str]:
     """Return the subset of ``raw`` that belongs to the requested command.
 
-    QPIGS keys are stored unprefixed; QPIRI keys carry a ``qpiri.``
-    prefix; QMOD keys carry ``qmod.``; QPIGS2 keys carry ``qpigs2.``.
+    The agent emits each command's payload either with a ``<cmd>.`` prefix
+    (canonical) or as a flat dict (older builds / postgen pipelines). Both
+    are handled — prefix takes precedence, falling back to name-based
+    routing for QPIRI so the Number / Select control entities keep working
+    against agents that don't prefix.
     """
+    if command == "QPIRI":
+        prefixed = {
+            k[len("qpiri."):]: v
+            for k, v in raw.items()
+            if k.startswith("qpiri.")
+        }
+        if prefixed:
+            return prefixed
+        # Fallback: pick out the well-known QPIRI field names from the
+        # flat dict. Anything not in the set falls through to QPIGS.
+        return {
+            k: v for k, v in raw.items()
+            if k in _QPIRI_FIELD_NAMES
+        }
+
     if command == "QPIGS":
+        # Exclude prefixed keys *and* the QPIRI name-set, so QPIGS-only
+        # sensors don't accidentally pick up config readings.
         return {
             k: v
             for k, v in raw.items()
             if not k.startswith(("qpiri.", "qmod.", "qpigs2."))
+            and k not in _QPIRI_FIELD_NAMES
         }
+
     for token, prefix in (
-        ("QPIRI", "qpiri."),
         ("QMOD", "qmod."),
         ("QPIGS2", "qpigs2."),
     ):
