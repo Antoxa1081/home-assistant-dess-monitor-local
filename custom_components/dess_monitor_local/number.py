@@ -28,6 +28,7 @@ async def async_setup_entry(
         new_devices.extend([
             BatteryCapacityNumber(item, hass),
             FullChargeSyncVoltageNumber(item, hass),
+            DischargeFloorSoCNumber(item, hass),
         ])
     if new_devices:
         async_add_entities(new_devices)
@@ -165,6 +166,53 @@ class FullChargeSyncVoltageNumber(NumberEntity, RestoreEntity):
                 self._value = float(state.state)
             except ValueError:
                 self._value = 0.0
+
+    @property
+    def native_value(self):
+        return self._value
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._value = value
+        self.async_write_ha_state()
+
+
+class DischargeFloorSoCNumber(NumberEntity, RestoreEntity):
+    """User-configurable floor SoC for the "time to floor" calculation.
+
+    Used by the ``vSoC Time to Discharge Floor`` sensor as the target
+    end-of-discharge percentage. Common values: 15-20% for LFP (preserves
+    cycle life), 50% for lead-acid (DoD limit), 0% for "until empty".
+    """
+
+    def __init__(self, inverter_device, hass):
+        self._inverter_device = inverter_device
+        self._hass = hass
+        self._attr_unique_id = f"{inverter_device.inverter_id}_discharge_floor_soc"
+        self._attr_name = f"{inverter_device.name} vSoC Discharge Floor"
+        self._value = 15.0  # default — sensible for LFP
+
+        self._attr_native_min_value = 0.0
+        self._attr_native_max_value = 80.0
+        self._attr_native_step = 1.0
+        self._attr_mode = NumberMode.BOX
+        self._attr_native_unit_of_measurement = "%"
+        self._attr_icon = "mdi:battery-low"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, inverter_device.inverter_id)},
+            name=inverter_device.name,
+            manufacturer="ESS",
+            model=inverter_device.inverter_id,
+            sw_version=inverter_device.firmware_version,
+        )
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        state = await self.async_get_last_state()
+        if state and state.state not in ("unknown", "unavailable"):
+            try:
+                self._value = float(state.state)
+            except ValueError:
+                self._value = 15.0
 
     @property
     def native_value(self):

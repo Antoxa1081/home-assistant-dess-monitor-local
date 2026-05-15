@@ -3,7 +3,7 @@ import math
 import time
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass, RestoreSensor
-from homeassistant.const import EntityCategory, UnitOfEnergy, PERCENTAGE
+from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime, PERCENTAGE
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData
@@ -15,7 +15,10 @@ from custom_components.dess_monitor_local.sanity import (
     is_plausible_power,
     max_step_wh,
 )
-from custom_components.dess_monitor_local.sensors.direct_sensor import DirectTypedSensorBase
+from custom_components.dess_monitor_local.sensors.direct_sensor import (
+    DirectSensorBase,
+    DirectTypedSensorBase,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -617,6 +620,11 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             pass
         return None
 
+    @property
+    def capacity_ah(self) -> float | None:
+        """Expose the user-set capacity to downstream sensors (time-to-* etc.)."""
+        return self._battery_capacity_ah
+
     def update_soc(self, signed_current_a: float, current_voltage: float):
         """Coulomb-counting SoC update.
 
@@ -766,3 +774,139 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         except (KeyError, ValueError, TypeError):
             self._attr_native_value = None
             self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# Time-to-* sensors. Project the current battery activity rate onto the SoC
+# bracket to estimate how long until the battery reaches a target percentage.
+#
+# Math is straightforward Coulomb-counting (kept consistent with vSoC):
+#
+#     hours = (Δsoc / 100) × capacity_ah / current_a
+#
+# where ``current_a`` is the abs() of the active direction (discharge for
+# floor-eta, charge for full-eta). Reads SoC and capacity from the live
+# vSoC sensor instance so all derived numbers share one source of truth —
+# if the user adjusts capacity mid-day, both update at the same tick.
+#
+# Behavior summary:
+#   * Sensor returns ``None`` (→ unknown) when the relevant direction
+#     isn't active (battery idle, or charging when we're computing
+#     time-to-empty).
+#   * Sensor returns ``0`` when the target is already met (already at
+#     floor / already at 100%).
+#   * Otherwise: hours, rounded to 3 decimals.
+# ---------------------------------------------------------------------------
+
+
+# Below this current threshold (Amperes) we don't bother computing a time
+# estimate — the result would either be misleading huge or jitter wildly
+# on small parasitic load / charge values that don't reflect a real
+# discharge or charge cycle.
+_IDLE_CURRENT_THRESHOLD_A = 0.1
+
+
+class _TimeEstimateBase(DirectSensorBase):
+    """Common scaffolding for the time-to-* sensors."""
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, inverter_device, coordinator, soc_sensor):
+        super().__init__(inverter_device, coordinator)
+        self._soc_sensor = soc_sensor
+
+    def _read_current_a(self, key: str) -> float:
+        try:
+            section = self.data.get("qpigs", {})
+            return float(section.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+
+class DirectBatteryTimeToFloorSensor(_TimeEstimateBase):
+    """Hours until vSoC reaches the user-configured discharge floor.
+
+    Reads the floor percentage from the ``vSoC Discharge Floor`` number
+    entity on every tick rather than tracking state-change events — keeps
+    the implementation tiny and the floor isn't latency-sensitive.
+    """
+
+    _attr_icon = "mdi:battery-clock"
+
+    def __init__(self, inverter_device, coordinator, soc_sensor, hass):
+        super().__init__(inverter_device, coordinator, soc_sensor)
+        self._hass = hass
+        self._attr_unique_id = (
+            f"{inverter_device.inverter_id}_time_to_floor"
+        )
+        self._attr_name = (
+            f"{inverter_device.name} vSoC Time to Discharge Floor"
+        )
+        device_slug = slugify(inverter_device.name)
+        self._floor_entity_id = f"number.{device_slug}_vsoc_discharge_floor"
+
+    def _read_target_floor(self) -> float:
+        state = self._hass.states.get(self._floor_entity_id)
+        if state is None or state.state in ("unknown", "unavailable", None):
+            return 15.0  # match DischargeFloorSoCNumber default
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return 15.0
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        soc = self._soc_sensor.native_value
+        capacity_ah = self._soc_sensor.capacity_ah
+        discharge_a = self._read_current_a("battery_discharge_current")
+        target = self._read_target_floor()
+
+        if soc is None or capacity_ah is None or capacity_ah <= 0:
+            self._attr_native_value = None
+        elif discharge_a < _IDLE_CURRENT_THRESHOLD_A:
+            # Not discharging — no meaningful ETA.
+            self._attr_native_value = None
+        elif soc <= target:
+            # Already at or below floor.
+            self._attr_native_value = 0.0
+        else:
+            ah_remaining = (soc - target) / 100.0 * capacity_ah
+            hours = ah_remaining / discharge_a
+            self._attr_native_value = round(hours, 3)
+
+        self.async_write_ha_state()
+
+
+class DirectBatteryTimeToFullSensor(_TimeEstimateBase):
+    """Hours until vSoC reaches 100% at the current charging rate."""
+
+    _attr_icon = "mdi:battery-charging-100"
+
+    def __init__(self, inverter_device, coordinator, soc_sensor):
+        super().__init__(inverter_device, coordinator, soc_sensor)
+        self._attr_unique_id = (
+            f"{inverter_device.inverter_id}_time_to_full"
+        )
+        self._attr_name = f"{inverter_device.name} vSoC Time to Full"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        soc = self._soc_sensor.native_value
+        capacity_ah = self._soc_sensor.capacity_ah
+        charge_a = self._read_current_a("battery_charging_current")
+
+        if soc is None or capacity_ah is None or capacity_ah <= 0:
+            self._attr_native_value = None
+        elif charge_a < _IDLE_CURRENT_THRESHOLD_A:
+            self._attr_native_value = None
+        elif soc >= 100:
+            self._attr_native_value = 0.0
+        else:
+            ah_needed = (100.0 - soc) / 100.0 * capacity_ah
+            hours = ah_needed / charge_a
+            self._attr_native_value = round(hours, 3)
+
+        self.async_write_ha_state()

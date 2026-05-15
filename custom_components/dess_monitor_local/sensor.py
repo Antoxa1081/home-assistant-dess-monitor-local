@@ -10,8 +10,16 @@ from custom_components.dess_monitor_local.sensors.direct_sensor import (
     generate_qpiri_sensors,
 )
 from . import HubConfigEntry
-from .sensors.direct_energy_sensors import DirectInverterOutputEnergySensor, DirectPV2EnergySensor, \
-    DirectPVEnergySensor, DirectBatteryInEnergySensor, DirectBatteryOutEnergySensor, DirectBatteryStateOfChargeSensor
+from .sensors.direct_energy_sensors import (
+    DirectInverterOutputEnergySensor,
+    DirectPV2EnergySensor,
+    DirectPVEnergySensor,
+    DirectBatteryInEnergySensor,
+    DirectBatteryOutEnergySensor,
+    DirectBatteryStateOfChargeSensor,
+    DirectBatteryTimeToFloorSensor,
+    DirectBatteryTimeToFullSensor,
+)
 
 
 async def async_setup_entry(
@@ -25,6 +33,12 @@ async def async_setup_entry(
     is_pi18 = config_entry.options.get(CONF_PROTOCOL) == PROTOCOL_PI18
 
     for item in hub.items:
+        # Construct the SoC sensor first — the time-to-* sensors hold a
+        # reference to it so they read SoC and capacity from the same
+        # in-memory state, avoiding any cross-entity state-lookup race
+        # and guaranteeing all derived numbers move in lockstep.
+        soc_sensor = DirectBatteryStateOfChargeSensor(item, hub.direct_coordinator, hass)
+
         new_devices.extend(create_direct_sensors(item, hub.direct_coordinator))
         new_devices.extend(generate_qpiri_sensors(item, hub.direct_coordinator))
         new_devices.extend([
@@ -33,7 +47,9 @@ async def async_setup_entry(
             DirectInverterOutputEnergySensor(item, hub.direct_coordinator),
             DirectBatteryInEnergySensor(item, hub.direct_coordinator),
             DirectBatteryOutEnergySensor(item, hub.direct_coordinator),
-            DirectBatteryStateOfChargeSensor(item, hub.direct_coordinator, hass),
+            soc_sensor,
+            DirectBatteryTimeToFloorSensor(item, hub.direct_coordinator, soc_sensor, hass),
+            DirectBatteryTimeToFullSensor(item, hub.direct_coordinator, soc_sensor),
         ])
         if is_pi18:
             # PI18 GS response exposes a second MPPT, two temperatures, and
