@@ -38,26 +38,25 @@ BATTERY_MODE_LEAD_ACID = "Lead-acid"
 # but it's a *voltage* effect, not a Coulomb effect, so it disappears here.
 # Lead-acid loses real Coulombs to gassing and self-discharge — hence the
 # lower factor. ``tail_c_rate`` is the absorption-tail current threshold
-# as a fraction of nominal capacity (0.05C = 5 A on a 100 Ah bank).
+# as a fraction of nominal capacity (0.05C = 5 A on a 100 Ah bank). Lead
+# needs a tighter tail (0.02C) because absorption is slower and we want
+# to wait until current really tapers off.
 _CHEMISTRY_PARAMS = {
     BATTERY_MODE_LI_VOLTAGE: {
         "charge_eff": 0.99,
         "discharge_eff": 1.0,
         "tail_c_rate": 0.05,
-        "hysteresis_v": 0.2,
     },
     BATTERY_MODE_LEAD_ACID: {
         "charge_eff": 0.90,
         "discharge_eff": 0.95,
         "tail_c_rate": 0.02,
-        "hysteresis_v": 0.5,
     },
     # BMS mode bypasses the integrator entirely — params unused.
     BATTERY_MODE_LI_BMS: {
         "charge_eff": 1.0,
         "discharge_eff": 1.0,
         "tail_c_rate": 0.05,
-        "hysteresis_v": 0.2,
     },
 }
 
@@ -695,31 +694,41 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._prev_effective_current_a = effective_current_a
         self._prev_ts = now
 
-        # ---------- Snap triggers --------------------------------------
-        # Trigger A (debounced): terminal voltage held at/above sync for
-        # _SYNC_DEBOUNCE_TICKS in a row, with chemistry-specific hysteresis
-        # below to reset the counter. Filters transient peaks.
-        hysteresis_v = params["hysteresis_v"]
-        if current_voltage >= sync_voltage:
-            self._at_sync_ticks += 1
-        elif current_voltage < (sync_voltage - hysteresis_v):
-            self._at_sync_ticks = 0
-        # In the dead-zone (sync − hysteresis ≤ V < sync) hold the counter.
-
-        snap_voltage_armed = self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS
-
-        # Trigger B: float-phase absorption tail. Tail current threshold
-        # is now in Amperes directly — capacity_ah × tail_c_rate gives a
-        # real "0.05C" value (5 A on a 100 Ah bank). Much more meaningful
-        # than the legacy 2×bulk_voltage power heuristic.
+        # ---------- Snap-to-100% --------------------------------------
+        # Battery is genuinely full only when BOTH conditions hold:
+        #   (a) terminal voltage has reached the absorption / float setpoint
+        #       (CV phase entered), AND
+        #   (b) charge current has tapered to the absorption-tail threshold
+        #       (battery can no longer accept full current at this voltage).
+        #
+        # Earlier revisions snapped on (a) alone, but for LFP that transition
+        # happens at ~80-90% real SoC — the remaining 10-20% comes from the
+        # CV tail. Voltage-only snap caused jumps like 70 → 100% the moment
+        # bulk_voltage was hit.
+        #
+        # The voltage threshold uses min(sync, float) because the charger
+        # can reach "full" via either path: stayed at bulk until tail
+        # (absorption complete), or already dropped to float and tail.
+        # Either way, voltage at-or-above whichever is *lower* + tail
+        # current is the correct condition.
         tail_current_a = max_capacity_ah * params["tail_c_rate"]
-        snap_tail_armed = (
-            floating_voltage is not None
-            and current_voltage >= floating_voltage
-            and 0 < signed_current_a <= tail_current_a
+        v_full_threshold = (
+            min(sync_voltage, floating_voltage)
+            if floating_voltage is not None and floating_voltage > 0
+            else sync_voltage
         )
+        at_voltage = current_voltage >= v_full_threshold
+        at_tail = 0 < signed_current_a <= tail_current_a
 
-        if snap_voltage_armed or snap_tail_armed:
+        if at_voltage and at_tail:
+            self._at_sync_ticks += 1
+        else:
+            # Decay (not hard reset) — one bad tick costs one count, two
+            # good ticks recover. Tolerates brief load transients during
+            # absorption without falsely re-arming from scratch.
+            self._at_sync_ticks = max(0, self._at_sync_ticks - 1)
+
+        if self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS:
             soc_percent = 100.0
             self._accumulated_charge_ah = max_capacity_ah
         else:
