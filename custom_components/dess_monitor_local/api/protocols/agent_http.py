@@ -136,14 +136,36 @@ def split_raw_by_command(
             if k in _QPIRI_FIELD_NAMES
         }
 
+    if command == "QFWS":
+        # Newer agent builds (Easun postgen pipeline et al.) expose a rich
+        # PI18-style ``warn_*`` map directly on the flat snapshot. Collect
+        # everything that looks like a warning flag — also drag in any
+        # ``fault_code`` / ``fault_description`` if present — so the
+        # fault-summary and any_warning sensors light up correctly on
+        # the agent path.
+        result: dict = {}
+        for k, v in raw.items():
+            if k.startswith("warn_"):
+                # Agent stores flags as "0"/"1" string. Normalise to bool
+                # so downstream sensors match the PI18 decoder's contract.
+                try:
+                    result[k] = bool(int(v))
+                except (TypeError, ValueError):
+                    result[k] = bool(v)
+            elif k in ("fault_code", "fault_description"):
+                result[k] = v
+        return result
+
     if command == "QPIGS":
-        # Exclude prefixed keys *and* the QPIRI name-set, so QPIGS-only
-        # sensors don't accidentally pick up config readings.
+        # Exclude prefixed keys, the QPIRI name-set, *and* warn_* /
+        # fault_* keys (they belong in QFWS now), so QPIGS-only sensors
+        # don't accidentally pick up config readings or warning flags.
         qpigs = {
             k: v
             for k, v in raw.items()
-            if not k.startswith(("qpiri.", "qmod.", "qpigs2."))
+            if not k.startswith(("qpiri.", "qmod.", "qpigs2.", "warn_"))
             and k not in _QPIRI_FIELD_NAMES
+            and k not in ("fault_code", "fault_description")
         }
         # Agent ships SMG-II-style signed ``battery_current`` (+ charging,
         # − discharging). The rest of the integration is Voltronic-shaped

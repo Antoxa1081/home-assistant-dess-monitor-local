@@ -245,8 +245,15 @@ class _WarningFlagBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        v = self._flags.get(self._flag_key)
-        self._attr_is_on = bool(v) if v is not None else None
+        # Accept either naming convention: bare (PI30 QPIWS) or
+        # warn_-prefixed (PI18 QFWS + agent postgen). Whichever is
+        # populated wins. None only if neither is present at all.
+        bare = self._flags.get(self._flag_key)
+        prefixed = self._flags.get(f"warn_{self._flag_key}")
+        if bare is not None or prefixed is not None:
+            self._attr_is_on = bool(bare) or bool(prefixed)
+        else:
+            self._attr_is_on = None
         self.async_write_ha_state()
 
 

@@ -641,36 +641,73 @@ class DirectOperatingModeSensor(DirectEnumSensorBase):
 # Severity order for the summary text. Higher index = lower priority. The
 # first set bit found in this list becomes the displayed state; the
 # state shows "OK" when no bit is set.
+#
+# Each entry is a *base name* — the lookup tries both ``flags[name]``
+# (PI30 QPIWS) and ``flags["warn_" + name]`` (PI18 QFWS + the agent's
+# postgen flat snapshot), so all three transports share one severity
+# table without duplicate entries.
 _WARNING_SEVERITY_ORDER: tuple[tuple[str, str], ...] = (
-    # (qpiws_key, display_name) — most severe first
-    ("inverter_fault",            "Inverter Fault"),
-    ("battery_under_shutdown",    "Battery Shutdown"),
-    ("battery_open",              "Battery Disconnected"),
-    ("battery_short",             "Battery Short Circuit"),
-    ("self_test_fail",            "Self-test Fail"),
-    ("inverter_over_current",     "Inverter Overcurrent"),
-    ("bus_over",                  "Bus Overvoltage"),
-    ("bus_under",                 "Bus Undervoltage"),
-    ("bus_soft_fail",             "Bus Soft-start Fail"),
-    ("over_temperature",          "Over Temperature"),
-    ("eeprom_fault",              "EEPROM Fault"),
-    ("current_sensor_fail",       "Current Sensor Fail"),
-    ("fan_locked",                "Fan Locked"),
-    ("overload",                  "Overload"),
-    ("battery_voltage_high",      "Battery Overvoltage"),
-    ("battery_low_alarm",         "Battery Low"),
-    ("battery_too_low_to_charge", "Battery Too Low to Charge"),
-    ("inverter_voltage_too_high", "Inverter Output Overvoltage"),
-    ("inverter_voltage_too_low",  "Inverter Output Undervoltage"),
-    ("op_dc_voltage_over",        "Output DC Overvoltage"),
-    ("pv_voltage_high",           "PV Overvoltage"),
-    ("mppt_overload_fault",       "MPPT Overload"),
-    ("opv_short",                 "Output Short"),
-    ("inverter_soft_fail",        "Inverter Soft-start Fail"),
-    ("power_limit",               "Power Limiting"),
-    ("mppt_overload_warning",     "MPPT Overload Warning"),
-    ("line_fail",                 "Line Fail"),
+    ("fault_active",                  "Fault Active"),                # agent only
+    ("inverter_fault",                "Inverter Fault"),
+    ("battery_under_shutdown",        "Battery Shutdown"),
+    ("battery_open",                  "Battery Disconnected"),
+    ("battery_short",                 "Battery Short Circuit"),
+    ("battery_over_current",          "Battery Overcurrent"),         # agent
+    ("self_test_fail",                "Self-test Fail"),
+    ("inverter_over_current",         "Inverter Overcurrent"),
+    ("inverter_negative_power",       "Inverter Negative Power"),     # agent
+    ("bus_over",                      "Bus Overvoltage"),
+    ("bus_under",                     "Bus Undervoltage"),
+    ("bus_soft_fail",                 "Bus Soft-start Fail"),
+    ("over_temperature",              "Over Temperature"),
+    ("inverter_over_temperature",     "Inverter Over Temperature"),   # agent
+    ("dcdc_over_temperature",         "DC-DC Over Temperature"),      # agent
+    ("pv_over_temperature",           "PV Over Temperature"),         # agent
+    ("eeprom_fault",                  "EEPROM Fault"),
+    ("current_sensor_fail",           "Current Sensor Fail"),
+    ("fan_locked",                    "Fan Locked"),
+    ("overload",                      "Overload"),
+    ("battery_voltage_high",          "Battery Overvoltage"),
+    ("battery_low_alarm",             "Battery Low"),
+    ("battery_too_low_to_charge",     "Battery Too Low to Charge"),
+    ("battery_type_incompatible",     "Battery Type Mismatch"),       # agent
+    ("inverter_voltage_too_high",     "Inverter Output Overvoltage"),
+    ("inverter_voltage_too_low",      "Inverter Output Undervoltage"),
+    ("op_dc_voltage_over",            "Output DC Overvoltage"),
+    ("pv_voltage_high",               "PV Overvoltage"),
+    ("pv_low_voltage",                "PV Voltage Too Low"),          # agent
+    ("pv_over_current",               "PV Overcurrent"),              # agent
+    ("mppt_overload_fault",           "MPPT Overload"),
+    ("opv_short",                     "Output Short"),
+    ("inverter_soft_fail",            "Inverter Soft-start Fail"),
+    ("mains_low_frequency",           "Grid Low Frequency"),          # agent
+    ("mains_over_frequency",          "Grid Over Frequency"),         # agent
+    ("mains_waveform_abnormal",       "Grid Waveform Abnormal"),      # agent
+    ("parallel_host_lost",            "Parallel Host Lost"),          # agent
+    ("parallel_sync_abnormal",        "Parallel Sync Lost"),          # agent
+    ("parallel_battery_diff",         "Parallel Battery Mismatch"),   # agent
+    ("parallel_mode_inconsistent",    "Parallel Mode Mismatch"),      # agent
+    ("parallel_version_incompatible", "Parallel Version Mismatch"),   # agent
+    ("parallel_comm_interrupted",     "Parallel Comm Lost"),          # agent
+    ("battery_eq_charging",           "Battery Equalize Charging"),   # agent (info)
+    ("pv_energy_low",                 "PV Energy Low"),               # agent (info)
+    ("power_limit",                   "Power Limiting"),
+    ("mppt_overload_warning",         "MPPT Overload Warning"),
+    ("line_fail",                     "Line Fail"),
+    # Sensor-calibration warnings — diagnostic, lowest priority.
+    ("battery_current_bias",          "Battery Current Bias"),        # agent
+    ("inverter_current_bias",         "Inverter Current Bias"),       # agent
+    ("output_current_bias",           "Output Current Bias"),         # agent
+    ("pv_current_bias",               "PV Current Bias"),             # agent
 )
+
+
+def _flag_set(flags: dict, base_name: str) -> bool:
+    """Test whether a warning flag is set under either of its two
+    naming conventions: bare (PI30 QPIWS) or ``warn_``-prefixed (PI18
+    QFWS + agent postgen). Used by the severity walk so a single
+    base-name table works across all transports."""
+    return bool(flags.get(base_name)) or bool(flags.get(f"warn_{base_name}"))
 
 
 class DirectInverterFaultSummarySensor(DirectSensorBase):
@@ -729,30 +766,36 @@ class DirectInverterFaultSummarySensor(DirectSensorBase):
             self.async_write_ha_state()
             return
 
-        # Walk severity-ordered list; first set bit wins.
+        # Walk severity-ordered list; first set bit wins. The helper
+        # transparently handles both naming conventions (bare vs warn_).
         first_active = None
         for key, display in _WARNING_SEVERITY_ORDER:
-            if flags.get(key):
+            if _flag_set(flags, key):
                 first_active = display
                 break
-        # PI18-specific warn_ flags (e.g. warn_line_fail) are not in the
-        # severity list because PI30 doesn't expose them by that name.
-        # Treat their presence as a secondary signal: count them but
-        # don't override the primary text unless nothing else is set.
-        pi18_warn_active = sum(
-            1 for k, v in flags.items()
-            if k.startswith("warn_") and v
-        )
-        pi30_active = sum(
-            1 for k, _ in _WARNING_SEVERITY_ORDER if flags.get(k)
-        )
-        total_active = pi30_active + pi18_warn_active
 
-        if first_active is None and pi18_warn_active == 0:
+        # Count total unique active bits across both conventions to size
+        # the "(+N more)" suffix. De-duplicate so an agent setting both
+        # ``overload`` and ``warn_overload`` (theoretically) only counts
+        # once.
+        active_keys: set[str] = set()
+        for key, _ in _WARNING_SEVERITY_ORDER:
+            if _flag_set(flags, key):
+                active_keys.add(key)
+        # Plus any warn_* flags we haven't catalogued in the severity
+        # table (unknown agent/firmware extensions) — surface them as
+        # "+N more" so they're at least counted.
+        cataloged_warn = {f"warn_{k}" for k, _ in _WARNING_SEVERITY_ORDER}
+        for k, v in flags.items():
+            if k.startswith("warn_") and v and k not in cataloged_warn:
+                active_keys.add(k)
+        total_active = len(active_keys)
+
+        if total_active == 0:
             self._attr_native_value = "OK"
         elif first_active is None:
-            # Only PI18 warn_* bits set — name the count.
-            self._attr_native_value = f"Warning: {pi18_warn_active} active"
+            # Only uncataloged warn_* bits set — name the count.
+            self._attr_native_value = f"Warning: {total_active} active"
         elif total_active > 1:
             self._attr_native_value = (
                 f"Warning: {first_active} (+{total_active - 1} more)"
