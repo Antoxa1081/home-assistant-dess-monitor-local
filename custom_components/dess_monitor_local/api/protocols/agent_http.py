@@ -167,6 +167,18 @@ def split_raw_by_command(
                 "battery_discharge_current",
                 f"{max(0.0, -i_signed):.2f}",
             )
+
+        # Synthesise PI30-style device_status_bits from the agent's
+        # higher-level fields. SMG-II / Modbus inverters don't expose
+        # those bit-strings at the protocol level, so binary_sensors
+        # built on QPIGS bits would otherwise stay ``unknown``. We
+        # derive them from operating_mode, current direction and PV
+        # presence — enough to drive the Inverter On / Grid Lost /
+        # Charging / AC-Charge / PV-Charge flags accurately.
+        if "device_status_bits_b7_b0" not in qpigs:
+            qpigs["device_status_bits_b7_b0"] = _synth_b7_b0(qpigs, raw)
+        if "device_status_bits_b10_b8" not in qpigs:
+            qpigs["device_status_bits_b10_b8"] = _synth_b10_b8(qpigs, raw)
         return qpigs
 
     for token, prefix in (
@@ -180,6 +192,75 @@ def split_raw_by_command(
                 if k.startswith(prefix)
             }
     return {}
+
+
+def _safe_float(d: dict, key: str) -> float:
+    try:
+        return float(d.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _synth_b7_b0(qpigs: dict, raw: dict) -> str:
+    """Reconstruct PI30 ``device_status_bits_b7_b0`` from agent fields.
+
+    Bit positions (MSB→LSB): fault, reserved, bus_over, line_fail,
+    battery_low, battery_high, overload, inverter_on. We can't observe
+    every fault from the agent feed — only the ones derivable from
+    operating_mode, grid voltage and overload status are populated.
+    Unknown bits stay 0; the integration's plausibility-bounds and
+    fault-summary sensors handle the rest via QPIWS/QFWS.
+    """
+    operating_mode = (raw.get("operating_mode") or raw.get("qmod.operating_mode") or "").lower()
+    grid_voltage = _safe_float(raw, "grid_voltage")
+    load_percent = _safe_float(raw, "load_percent")
+    # Inverter is "on" whenever it's not in PowerOn boot / Shutdown phase.
+    # Agent's operating_mode "Mains" / "OffGrid" / "Battery" all imply
+    # the inverter is actively converting.
+    inverter_on = operating_mode in ("mains", "offgrid", "battery", "line", "bypass")
+    # Grid considered lost when AC input voltage is below ~50 V — same
+    # heuristic the discharge-synthesis code uses elsewhere.
+    line_fail = grid_voltage < 50.0
+    # Overload: load_percent > 100 (some firmware reports 110+ during
+    # surge); fault states usually also push it here.
+    overload = load_percent > 100.0
+    fault = operating_mode == "fault"
+    bits = [
+        "1" if fault else "0",         # b7
+        "0",                           # b6 reserved
+        "0",                           # b5 bus_over — not derivable
+        "1" if line_fail else "0",     # b4
+        "0",                           # b3 battery_low — comes from QPIWS
+        "0",                           # b2 battery_high — comes from QPIWS
+        "1" if overload else "0",      # b1
+        "1" if inverter_on else "0",   # b0
+    ]
+    return "".join(bits)
+
+
+def _synth_b10_b8(qpigs: dict, raw: dict) -> str:
+    """Reconstruct PI30 ``device_status_bits_b10_b8`` from agent fields.
+
+    Bit positions (MSB→LSB): charging_to_battery, ac_charging_active,
+    scc_charging_active.
+    """
+    try:
+        i_signed = float(qpigs.get("battery_current", 0) or 0)
+    except (TypeError, ValueError):
+        i_signed = 0.0
+    charging_to_battery = i_signed > 0.1
+    # AC-side charging only when grid is up AND battery is charging.
+    grid_voltage = _safe_float(raw, "grid_voltage")
+    ac_charging = charging_to_battery and grid_voltage > 50.0
+    # SCC (PV) charging when PV is producing significantly.
+    pv_power = _safe_float(raw, "pv_charging_power") or _safe_float(raw, "pv_input_power")
+    scc_charging = pv_power > 5.0
+    bits = [
+        "1" if charging_to_battery else "0",  # b10
+        "1" if ac_charging else "0",          # b9
+        "1" if scc_charging else "0",         # b8
+    ]
+    return "".join(bits)
 
 
 async def post_agent_setting(

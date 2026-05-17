@@ -53,6 +53,23 @@ from .protocols.serial_uart import SERIAL_BAUDRATE, SerialCommandProtocol
 _LOGGER = logging.getLogger(__name__)
 
 
+# Translation from the agent's free-text operating_mode strings (used by
+# solar-system-agent for SMG-II / Modbus inverters) to the canonical
+# PI30 OperatingMode enum members. PI30 inverters return single-character
+# codes directly and don't need this layer.
+_AGENT_MODE_TO_PI30: dict = {
+    "Mains":     OperatingMode.Line,
+    "Line":      OperatingMode.Line,
+    "Bypass":    OperatingMode.Line,
+    "OffGrid":   OperatingMode.Battery,
+    "Battery":   OperatingMode.Battery,
+    "PowerOn":   OperatingMode.PowerOn,
+    "Standby":   OperatingMode.Standby,
+    "Fault":     OperatingMode.Fault,
+    "Shutdown":  OperatingMode.ShutdownApproaching,
+}
+
+
 # ---------------------------------------------------------------------------
 # READ
 # ---------------------------------------------------------------------------
@@ -103,6 +120,14 @@ async def get_direct_data(
             mode_name = sub.get("operating_mode")
             if mode_name is None:
                 return {}
+            # Agent uses human-readable strings ("Mains", "OffGrid",
+            # "Battery", "Standby", "Fault"); PI30 OperatingMode enum
+            # uses single-character codes (P/S/L/B/D/F). Map first, then
+            # fall through to enum lookup so PI30-shaped agents still
+            # work.
+            mapped = _AGENT_MODE_TO_PI30.get(mode_name)
+            if mapped is not None:
+                return {"operating_mode": mapped}
             try:
                 return {"operating_mode": OperatingMode[mode_name]}
             except KeyError:
