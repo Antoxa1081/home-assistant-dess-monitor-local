@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+from datetime import datetime, timezone
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass, RestoreSensor
 from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime, PERCENTAGE
@@ -65,6 +66,31 @@ _CHEMISTRY_PARAMS = {
 # safely filters transient voltage spikes from load steps or parser glitches
 # while staying short enough that real absorption phase always trips it.
 _SYNC_DEBOUNCE_TICKS = 3
+
+# Float-mode deadband. Several PI30 / Easun / Anern firmware variants
+# quantise ``battery_(charging|discharge)_current`` to integer Amperes.
+# Real float-mode current is ~0.1-0.5 A (cell self-discharge + DC-DC
+# losses); the firmware rounds it to 0 A or 1 A on every tick. Naively
+# integrating those 1 A samples credits the integrator with a phantom
+# ~0.5 A average discharge, pulling SoC down ~0.25-0.3 %/hour even
+# though the pack is truly idle.
+#
+# Counter-measure: when the inverter is clearly in float (terminal
+# voltage steady within ±FLOAT_VOLTAGE_WINDOW_V of the float setpoint)
+# AND the reported current is at or below the quantisation noise floor
+# (≤ FLOAT_NOISE_FLOOR_A), skip the trapezoidal step entirely. Any real
+# load above the floor exits the deadband immediately and integration
+# resumes.
+_FLOAT_VOLTAGE_WINDOW_V = 0.5
+_FLOAT_NOISE_FLOOR_A = 1.5
+
+
+def _wall_now() -> datetime:
+    """Wall-clock UTC ``now()``. Used for human-readable diagnostic
+    timestamps (e.g. "last sync was at ..."), not for the trapezoidal
+    integrator which uses ``time.monotonic`` to stay immune to clock
+    jumps."""
+    return datetime.now(timezone.utc)
 
 
 class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
@@ -392,14 +418,23 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
 
 class BatteryStoredData(ExtraStoredData):
 
-    def __init__(self, native_value: float | None, accumulated_charge_ah: float):
+    def __init__(
+        self,
+        native_value: float | None,
+        accumulated_charge_ah: float,
+        last_sync_at: datetime | None = None,
+    ):
         self.native_value = native_value
         self.accumulated_charge_ah = accumulated_charge_ah
+        self.last_sync_at = last_sync_at
 
     def as_dict(self) -> dict:
         return {
             "native_value": self.native_value,
             "accumulated_charge_ah": self.accumulated_charge_ah,
+            "last_sync_at": (
+                self.last_sync_at.isoformat() if self.last_sync_at else None
+            ),
         }
 
 
@@ -467,6 +502,12 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         # consecutive ticks at/above sync_voltage; resets when V falls
         # below sync_voltage − hysteresis_v.
         self._at_sync_ticks = 0
+        # Wall-clock timestamp of the most recent snap-to-100% event.
+        # Surfaced by the ``vSoC Last Full Charge Sync`` diagnostic sensor
+        # so the user can see how fresh the Coulomb-counter calibration
+        # is. ``None`` until the first snap (or first successful restore
+        # from extra-state).
+        self._last_sync_at: datetime | None = None
 
         async_track_state_change_event(
             self._hass,
@@ -494,6 +535,15 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             # Wh, not Ah, so it's not meaningfully restorable. Fall back to
             # 0 and let the next full-charge snap re-anchor the integrator.
             self._accumulated_charge_ah = float(data.get("accumulated_charge_ah", 0))
+            # Restore the last-snap timestamp so the diagnostic survives
+            # HA restarts. ``fromisoformat`` raises on malformed input —
+            # tolerate by leaving the timestamp as None.
+            iso = data.get("last_sync_at")
+            if isinstance(iso, str) and iso:
+                try:
+                    self._last_sync_at = datetime.fromisoformat(iso)
+                except ValueError:
+                    self._last_sync_at = None
         else:
             self._attr_native_value = 100.0
             self._accumulated_charge_ah = 0.0
@@ -515,6 +565,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         return BatteryStoredData(
             self._attr_native_value,
             self._accumulated_charge_ah,
+            self._last_sync_at,
         )
 
     @property
@@ -650,6 +701,11 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         """Expose the user-set capacity to downstream sensors (time-to-* etc.)."""
         return self._battery_capacity_ah
 
+    @property
+    def last_sync_at(self) -> datetime | None:
+        """Wall-clock UTC moment of the most recent snap-to-100% event."""
+        return self._last_sync_at
+
     def update_soc(self, signed_current_a: float, current_voltage: float):
         """Coulomb-counting SoC update.
 
@@ -699,6 +755,22 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         now = time.monotonic()
         elapsed_seconds = now - self._prev_ts
 
+        # ---------- Float-mode deadband -------------------------------
+        # Several inverter firmwares quantise discharge_current to integer
+        # Amperes. In float mode the real cell current is fractional
+        # (0.1-0.5 A self-discharge / DC-DC losses), so the firmware
+        # alternates between 0 A and 1 A reports — naively integrating
+        # those 1 A samples credits ~0.5 A phantom discharge and drains
+        # the SoC by ~0.3 %/h while the battery is actually idle. Detect
+        # float by: terminal V close to float setpoint, current at/below
+        # the quantisation noise floor; if both true, skip integration
+        # this tick.
+        in_float_deadband = (
+            floating_voltage is not None
+            and abs(current_voltage - floating_voltage) < _FLOAT_VOLTAGE_WINDOW_V
+            and abs(signed_current_a) <= _FLOAT_NOISE_FLOOR_A
+        )
+
         # Coulombic efficiency. LFP is nearly lossless at the Coulomb
         # level (≈0.99 charge / 1.0 discharge); lead loses real charge
         # to gassing on the charge side and to self-discharge on the
@@ -709,16 +781,24 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         else:
             effective_current_a = signed_current_a / params["discharge_eff"]
 
-        if self._prev_effective_current_a is not None:
-            # Trapezoidal Coulomb count: ΔAh = avg(I) × Δt (hours).
-            charge_increment = (elapsed_seconds / 3600) * (
-                self._prev_effective_current_a + effective_current_a
-            ) / 2
-            self._accumulated_charge_ah += charge_increment
+        if in_float_deadband:
+            # Treat the tick as idle — don't accumulate the quantisation
+            # noise. Reset prev baseline so the next out-of-deadband
+            # tick starts a fresh trapezoid (no stale value averaged in).
+            self._prev_current_a = signed_current_a
+            self._prev_effective_current_a = None
+            self._prev_ts = now
+        else:
+            if self._prev_effective_current_a is not None:
+                # Trapezoidal Coulomb count: ΔAh = avg(I) × Δt (hours).
+                charge_increment = (elapsed_seconds / 3600) * (
+                    self._prev_effective_current_a + effective_current_a
+                ) / 2
+                self._accumulated_charge_ah += charge_increment
 
-        self._prev_current_a = signed_current_a
-        self._prev_effective_current_a = effective_current_a
-        self._prev_ts = now
+            self._prev_current_a = signed_current_a
+            self._prev_effective_current_a = effective_current_a
+            self._prev_ts = now
 
         # ---------- Snap-to-100% --------------------------------------
         # Battery is genuinely full only when BOTH conditions hold:
@@ -757,6 +837,13 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         if self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS:
             soc_percent = 100.0
             self._accumulated_charge_ah = max_capacity_ah
+            # Record the wall-clock moment of the snap so the
+            # ``Time Since Last Sync`` diagnostic sensor can show how
+            # fresh the calibration anchor is. Uses wall time (not
+            # monotonic) because the diagnostic is meaningful only as a
+            # human-readable duration; survives across HA restarts via
+            # the integrator's saved extra-state.
+            self._last_sync_at = _wall_now()
         else:
             if self._accumulated_charge_ah < 0:
                 self._accumulated_charge_ah = 0.0
@@ -944,4 +1031,130 @@ class DirectBatteryTimeToFullSensor(_TimeEstimateBase):
             hours = ah_needed / charge_a
             self._attr_native_value = round(hours, 3)
 
+        self.async_write_ha_state()
+
+
+class DirectBatteryBackupTimeSensor(_TimeEstimateBase):
+    """Hours of backup runtime at the current AC load.
+
+    Answers the question "if the grid drops *right now*, how long will the
+    battery last?" — unlike ``Time to Discharge Floor`` which uses the
+    actual battery discharge current (so reads None while the system is
+    grid-tied or charging), this sensor synthesises the discharge by
+    projecting the *current AC load* (output_active_power) onto the
+    battery, less whatever PV is contributing (PV typically keeps working
+    during a grid outage on hybrid inverters).
+
+    Calculation:
+
+        equivalent_discharge_a = max(0, (load_w − pv_w)) / battery_voltage
+        hours = (soc − floor) / 100 × capacity_ah / equivalent_discharge_a
+
+    Caveats:
+      * Inverter conversion losses (~5-8%) are ignored, so this slightly
+        overestimates runtime. Treat the number as an upper bound for
+        planning, not a precise prediction.
+      * If PV is currently producing more than the load, this returns
+        ``None`` (battery would actually be charging during the outage —
+        runtime is effectively infinite).
+      * If load is essentially zero, also ``None`` (no meaningful ETA).
+    """
+
+    _attr_icon = "mdi:home-battery"
+
+    def __init__(self, inverter_device, coordinator, soc_sensor, hass):
+        super().__init__(inverter_device, coordinator, soc_sensor)
+        self._hass = hass
+        self._attr_unique_id = (
+            f"{inverter_device.inverter_id}_backup_time"
+        )
+        self._attr_name = (
+            f"{inverter_device.name} vSoC Backup Time at Current Load"
+        )
+        device_slug = slugify(inverter_device.name)
+        self._floor_entity_id = f"number.{device_slug}_vsoc_discharge_floor"
+
+    def _read_target_floor(self) -> float:
+        state = self._hass.states.get(self._floor_entity_id)
+        if state is None or state.state in ("unknown", "unavailable", None):
+            return 15.0
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return 15.0
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        soc = self._soc_sensor.native_value
+        capacity_ah = self._soc_sensor.capacity_ah
+        target = self._read_target_floor()
+
+        try:
+            section = self.data.get("qpigs", {})
+            load_w = float(section.get("output_active_power", 0) or 0)
+            pv_w = float(section.get("pv_charging_power", 0) or 0)
+            v_bat = float(section.get("battery_voltage", 0) or 0)
+        except (TypeError, ValueError):
+            self._attr_native_value = None
+            self.async_write_ha_state()
+            return
+
+        # Net power the battery would have to supply if the grid dropped
+        # right now. PV stays online during grid outage on hybrid systems,
+        # so subtract it. Clamp to zero so we never produce a negative
+        # equivalent current (PV oversupply → no discharge).
+        net_load_w = max(0.0, load_w - pv_w)
+        equivalent_discharge_a = (
+            net_load_w / v_bat if v_bat > 0 else 0.0
+        )
+
+        if soc is None or capacity_ah is None or capacity_ah <= 0:
+            self._attr_native_value = None
+        elif equivalent_discharge_a < _IDLE_CURRENT_THRESHOLD_A:
+            # PV covers the load (or load near zero) — no meaningful ETA.
+            self._attr_native_value = None
+        elif soc <= target:
+            self._attr_native_value = 0.0
+        else:
+            ah_remaining = (soc - target) / 100.0 * capacity_ah
+            hours = ah_remaining / equivalent_discharge_a
+            self._attr_native_value = round(hours, 3)
+
+        self.async_write_ha_state()
+
+
+class DirectBatteryVSocLastSyncSensor(DirectSensorBase):
+    """Diagnostic: wall-clock timestamp of the last vSoC snap-to-100% event.
+
+    Why this matters: Coulomb counting drifts gradually (small current
+    measurement errors integrate). The trapezoid only self-calibrates
+    when the battery reaches a real "full" state and the snap fires.
+    If the user never lets the bank fully charge (e.g., heavy daily
+    cycling that tops out at 90%), drift accumulates indefinitely.
+
+    This sensor surfaces the staleness of the last calibration anchor
+    as a TIMESTAMP. HA's UI auto-renders it as "X ago"; automations can
+    compare against ``now()`` for "alert if no sync for >48h".
+
+    State is ``None`` until the first snap fires (or the first successful
+    extra-state restore after upgrade).
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:battery-sync-outline"
+
+    def __init__(self, inverter_device, coordinator, soc_sensor):
+        super().__init__(inverter_device, coordinator)
+        self._soc_sensor = soc_sensor
+        self._attr_unique_id = (
+            f"{inverter_device.inverter_id}_vsoc_last_sync"
+        )
+        self._attr_name = (
+            f"{inverter_device.name} vSoC Last Full Charge Sync"
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._attr_native_value = self._soc_sensor.last_sync_at
         self.async_write_ha_state()

@@ -19,6 +19,8 @@ from .sensors.direct_energy_sensors import (
     DirectBatteryStateOfChargeSensor,
     DirectBatteryTimeToFloorSensor,
     DirectBatteryTimeToFullSensor,
+    DirectBatteryBackupTimeSensor,
+    DirectBatteryVSocLastSyncSensor,
 )
 
 
@@ -50,6 +52,8 @@ async def async_setup_entry(
             soc_sensor,
             DirectBatteryTimeToFloorSensor(item, hub.direct_coordinator, soc_sensor, hass),
             DirectBatteryTimeToFullSensor(item, hub.direct_coordinator, soc_sensor),
+            DirectBatteryBackupTimeSensor(item, hub.direct_coordinator, soc_sensor, hass),
+            DirectBatteryVSocLastSyncSensor(item, hub.direct_coordinator, soc_sensor),
         ])
         if is_pi18:
             # PI18 GS response exposes a second MPPT, two temperatures, and

@@ -137,11 +137,22 @@ class DirectCoordinator(DataUpdateCoordinator):
                 async def fetch_device_data(device):
                     qpigs = await fetch_with_retry(device, 'QPIGS', 'qpigs')
                     qpiri = await fetch_with_retry(device, 'QPIRI', 'qpiri')
+                    # QMOD = current operating mode (PowerOn / Standby /
+                    # Line / Battery / Fault). Cheap one-byte answer; gives
+                    # us a real status sensor for automations instead of
+                    # parsing the QPIGS status bits string.
+                    qmod = await fetch_with_retry(device, 'QMOD', 'qmod')
+                    # QPIGS2 = second PV input on dual-MPPT models. Many
+                    # inverters NAK it, in which case fetch_with_retry
+                    # returns {} and the PV2 sensors stay unavailable —
+                    # zero cost for the rest of users.
+                    qpigs2 = await fetch_with_retry(device, 'QPIGS2', 'qpigs2')
                     return device, {
                         "timestamp": datetime.now(),
                         'qpigs': qpigs,
                         'qpiri': qpiri,
-                        'qpigs2': {},
+                        'qmod': qmod,
+                        'qpigs2': qpigs2,
                     }
                     # return device, {
                     #     "timestamp": datetime.now(),

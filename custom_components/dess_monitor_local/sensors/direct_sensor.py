@@ -9,7 +9,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import DirectCoordinator
 from custom_components.dess_monitor_local.api.commands.direct_commands import ParallelMode, ChargerSourcePriority, \
-    OutputSourcePriority, ACInputVoltageRange, BatteryType, DeviceStatusBitsB7B0, \
+    OutputSourcePriority, ACInputVoltageRange, BatteryType, DeviceStatusBitsB7B0, OperatingMode, \
     PI18BatteryPowerDirection, PI18DCACPowerDirection, PI18LinePowerDirection, PI18MPPTStatus, \
     parse_device_status_bits_b7_b0
 from custom_components.dess_monitor_local.const import DOMAIN
@@ -592,6 +592,45 @@ class DirectDeviceStatusSensor(DirectSensorBase):
         return attrs
 
 
+class DirectOperatingModeSensor(DirectEnumSensorBase):
+    """Inverter operating mode from QMOD: PowerOn / Standby / Line /
+    Battery / ShutdownApproaching / Fault.
+
+    Useful as an automation trigger ("battery active → notify",
+    "fault → alarm") without having to template-parse status bit strings.
+
+    The decoder returns the field as an ``OperatingMode`` enum instance
+    (or the literal string ``"Unknown"`` when the code didn't match any
+    known mode). Coerce to ``.name`` so HA's ENUM-class validation
+    accepts the value.
+    """
+
+    enum_class = OperatingMode
+
+    def __init__(self, inverter_device, coordinator):
+        super().__init__(
+            inverter_device, coordinator,
+            data_section="qmod", data_key="operating_mode",
+            sensor_suffix="operating_mode", name_suffix="Operating Mode",
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        section = self.data.get("qmod", {})
+        raw = section.get("operating_mode")
+        if hasattr(raw, "name"):
+            value = raw.name
+        elif isinstance(raw, str):
+            value = raw
+        else:
+            value = None
+        if value in self.options:
+            self._attr_native_value = value
+        else:
+            self._attr_native_value = None
+        self.async_write_ha_state()
+
+
 DIRECT_SENSORS = [
     DirectPVPowerSensor,
     DirectPV2PowerSensor,
@@ -617,6 +656,7 @@ DIRECT_SENSORS = [
     DirectSCCBatteryVoltageSensor,
     DirectDeviceStatusSensor,
     DirectBatteryPowerSensor,
+    DirectOperatingModeSensor,
 ]
 
 
