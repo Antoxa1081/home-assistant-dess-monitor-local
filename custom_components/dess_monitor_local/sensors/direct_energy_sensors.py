@@ -185,10 +185,14 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
             return
 
         if power is not None:
+            # update_energy_value() writes the HA state internally; calling
+            # async_write_ha_state() again here would double the event-loop
+            # work per tick (HA logs "took 0.9s" when this stacks across
+            # all energy sensors on a busy loop).
             self.update_energy_value(power)
-
-        # Обновляем state (даже если power оказался None, рисуем текущее значение накопленной энергии)
-        self.async_write_ha_state()
+        else:
+            # No new sample — still publish so the accumulator stays visible.
+            self.async_write_ha_state()
 
 
 class DirectPVEnergySensor(DirectEnergySensorBase):
@@ -244,8 +248,8 @@ class DirectPV2EnergySensor(DirectEnergySensorBase):
             self.async_write_ha_state()
             return
 
+        # update_energy_value() already writes state; don't double-write.
         self.update_energy_value(power)
-        self.async_write_ha_state()
 
 
 class DirectInverterOutputEnergySensor(DirectEnergySensorBase):
@@ -324,8 +328,8 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
         else:
             power = 0.0
 
+        # update_energy_value() already writes state; don't double-write.
         self.update_energy_value(power)
-        self.async_write_ha_state()
 
 
 class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
@@ -372,8 +376,8 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
         power = current * voltage
         if power <= 0:
             power = 0.0
+        # update_energy_value() already writes state; don't double-write.
         self.update_energy_value(power)
-        self.async_write_ha_state()
 
 
 class BatteryStoredData(ExtraStoredData):
@@ -391,8 +395,20 @@ class BatteryStoredData(ExtraStoredData):
 
 class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
     _attr_device_class = SensorDeviceClass.BATTERY
+    # MEASUREMENT enables HA long-term statistics, which write a row every
+    # 5 minutes regardless of state-change. Without it, when SoC pegs at
+    # 100% (battery full) or 0% (drained) and stays there, ``last_changed``
+    # freezes and the History card / Apex / mini-graph show no further
+    # points — looking exactly like the sensor died.
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_suggested_display_precision = 1
+    # Emit state_changed on every coordinator tick even when the value is
+    # unchanged. Cost: ~8640 extra Recorder rows/day per sensor at the
+    # default 10-second poll — acceptable for one SoC sensor and crucial
+    # for short-window (history-graph) cards that don't extrapolate flat
+    # state forward.
+    _attr_force_update = True
 
     def __init__(self, inverter_device, coordinator, hass):
         super().__init__(

@@ -1,6 +1,6 @@
 import logging
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.const import UnitOfElectricPotential, UnitOfPower, UnitOfTemperature, EntityCategory, \
     UnitOfElectricCurrent, UnitOfFrequency, UnitOfApparentPower
 from homeassistant.core import callback
@@ -97,8 +97,19 @@ class DirectTypedSensorBase(DirectSensorBase):
         self.async_write_ha_state()
 
 
+# All numeric base classes below get ``state_class = MEASUREMENT``.
+# This enables HA's long-term statistics: a row is written every 5 minutes
+# regardless of state-change frequency. Without it, sensors that pin at a
+# steady value (battery full → power 0 W for hours; load idle → current 0 A;
+# temperature steady) stop emitting ``state_changed`` events, so the History
+# card / Apex / mini-graph render a frozen line at the moment of the last
+# change. With MEASUREMENT, the graph extends to ``now`` even when the
+# underlying value hasn't moved.
+
+
 class DirectWattSensorBase(DirectTypedSensorBase):
     device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfPower.WATT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_suggested_display_precision = 0
@@ -107,6 +118,7 @@ class DirectWattSensorBase(DirectTypedSensorBase):
 
 class DirectTemperatureSensorBase(DirectTypedSensorBase):
     device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -116,6 +128,7 @@ class DirectTemperatureSensorBase(DirectTypedSensorBase):
 
 class DirectVoltageSensorBase(DirectTypedSensorBase):
     device_class = SensorDeviceClass.VOLTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfElectricPotential.VOLT
     _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
     _attr_suggested_display_precision = 1
@@ -126,6 +139,7 @@ class DirectCurrentSensorBase(DirectTypedSensorBase):
     """Базовый сенсор силы тока (A) для direct-протокола."""
 
     device_class = SensorDeviceClass.CURRENT
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_suggested_display_precision = 0
@@ -134,6 +148,7 @@ class DirectCurrentSensorBase(DirectTypedSensorBase):
 
 class DirectApparentPowerSensorBase(DirectTypedSensorBase):
     device_class = SensorDeviceClass.APPARENT_POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfApparentPower.VOLT_AMPERE
     _attr_native_unit_of_measurement = UnitOfApparentPower.VOLT_AMPERE
     _attr_suggested_display_precision = 0
@@ -141,6 +156,7 @@ class DirectApparentPowerSensorBase(DirectTypedSensorBase):
 
 
 class DirectBatteryCapacitySensorBase(DirectTypedSensorBase):
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = "Ah"
     _attr_native_unit_of_measurement = "Ah"
     _attr_suggested_display_precision = 0
@@ -149,6 +165,7 @@ class DirectBatteryCapacitySensorBase(DirectTypedSensorBase):
 
 class DirectFrequencySensorBase(DirectTypedSensorBase):
     device_class = SensorDeviceClass.FREQUENCY
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = UnitOfFrequency.HERTZ
     _attr_native_unit_of_measurement = UnitOfFrequency.HERTZ
     _attr_suggested_display_precision = 1
@@ -334,6 +351,7 @@ class DirectGridVoltageSensor(DirectVoltageSensorBase):
 
 class DirectGridFrequencySensor(DirectTypedSensorBase):
     device_class = SensorDeviceClass.FREQUENCY
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = "Hz"
     _attr_native_unit_of_measurement = "Hz"
     _attr_suggested_display_precision = 1
@@ -351,6 +369,7 @@ class DirectACOutputVoltageSensor(DirectVoltageSensorBase):
 
 class DirectACOutputFrequencySensor(DirectTypedSensorBase):
     device_class = SensorDeviceClass.FREQUENCY
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = "Hz"
     _attr_native_unit_of_measurement = "Hz"
     _attr_suggested_display_precision = 1
@@ -369,6 +388,7 @@ class DirectOutputApparentPowerSensor(DirectWattSensorBase):
 
 class DirectLoadPercentSensor(DirectTypedSensorBase):
     device_class = SensorDeviceClass.POWER_FACTOR
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = "%"
     _attr_native_unit_of_measurement = "%"
     _attr_suggested_display_precision = 0
@@ -461,6 +481,11 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
 
 
 class DirectBatteryCapacitySensor(DirectTypedSensorBase):
+    # Inverter-reported SoC% (BMS-sourced on Li-CAN setups, internal
+    # estimate on lead-acid). Treat as a continuous measurement so the
+    # History card extends the line when the battery is pegged at 100/0.
+    device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_unit_of_measurement = "%"
     _attr_native_unit_of_measurement = "%"
     _attr_suggested_display_precision = 0
