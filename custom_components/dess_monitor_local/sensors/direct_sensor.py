@@ -631,6 +631,163 @@ class DirectOperatingModeSensor(DirectEnumSensorBase):
         self.async_write_ha_state()
 
 
+# ---------------------------------------------------------------------------
+# Inverter Warning / Fault summary sensor — combines PI30 QPIWS and PI18 FWS
+# into a single human-readable status text, with every individual flag
+# preserved as an attribute for granular automations.
+# ---------------------------------------------------------------------------
+
+
+# Severity order for the summary text. Higher index = lower priority. The
+# first set bit found in this list becomes the displayed state; the
+# state shows "OK" when no bit is set.
+_WARNING_SEVERITY_ORDER: tuple[tuple[str, str], ...] = (
+    # (qpiws_key, display_name) — most severe first
+    ("inverter_fault",            "Inverter Fault"),
+    ("battery_under_shutdown",    "Battery Shutdown"),
+    ("battery_open",              "Battery Disconnected"),
+    ("battery_short",             "Battery Short Circuit"),
+    ("self_test_fail",            "Self-test Fail"),
+    ("inverter_over_current",     "Inverter Overcurrent"),
+    ("bus_over",                  "Bus Overvoltage"),
+    ("bus_under",                 "Bus Undervoltage"),
+    ("bus_soft_fail",             "Bus Soft-start Fail"),
+    ("over_temperature",          "Over Temperature"),
+    ("eeprom_fault",              "EEPROM Fault"),
+    ("current_sensor_fail",       "Current Sensor Fail"),
+    ("fan_locked",                "Fan Locked"),
+    ("overload",                  "Overload"),
+    ("battery_voltage_high",      "Battery Overvoltage"),
+    ("battery_low_alarm",         "Battery Low"),
+    ("battery_too_low_to_charge", "Battery Too Low to Charge"),
+    ("inverter_voltage_too_high", "Inverter Output Overvoltage"),
+    ("inverter_voltage_too_low",  "Inverter Output Undervoltage"),
+    ("op_dc_voltage_over",        "Output DC Overvoltage"),
+    ("pv_voltage_high",           "PV Overvoltage"),
+    ("mppt_overload_fault",       "MPPT Overload"),
+    ("opv_short",                 "Output Short"),
+    ("inverter_soft_fail",        "Inverter Soft-start Fail"),
+    ("power_limit",               "Power Limiting"),
+    ("mppt_overload_warning",     "MPPT Overload Warning"),
+    ("line_fail",                 "Line Fail"),
+)
+
+
+class DirectInverterFaultSummarySensor(DirectSensorBase):
+    """Single-glance "what's wrong with the inverter" sensor.
+
+    State machine: walks the warning bits in severity order, displays
+    the worst active one as text. ``"OK"`` when nothing is flagged.
+    Surfaces *every* flag (set or clear) plus the active count as
+    state attributes for granular template / automation use.
+
+    Works for both PI30 (via QPIWS dict) and PI18 (via QFWS dict with
+    its richer ``fault_code`` / ``fault_description`` semantics). If the
+    inverter doesn't report a section, the sensor falls back to the
+    other. Effectively unavailable only when *both* sections are empty.
+    """
+
+    _attr_icon = "mdi:alert-circle-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, inverter_device, coordinator):
+        super().__init__(inverter_device, coordinator)
+        self._attr_unique_id = (
+            f"{inverter_device.inverter_id}_direct_fault_summary"
+        )
+        self._attr_name = (
+            f"{inverter_device.name} Direct Inverter Fault Summary"
+        )
+
+    def _merged_warnings(self) -> dict:
+        """Pick the populated warning section (PI30 ``qpiws`` or PI18
+        ``qfws``) — they share enough field names that downstream
+        consumers can treat the result as a single namespace."""
+        qpiws = self.data.get("qpiws", {}) or {}
+        qfws = self.data.get("qfws", {}) or {}
+        # Prefer whichever is populated; if both, merge with PI18 fields
+        # only adding non-overlapping warn_* keys.
+        merged = dict(qpiws)
+        for k, v in qfws.items():
+            merged.setdefault(k, v)
+        return merged
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        flags = self._merged_warnings()
+
+        # PI18 carries an explicit fault_code — if non-zero, it takes
+        # absolute priority over individual warning bits because it
+        # represents an active hardware fault.
+        fault_code = flags.get("fault_code")
+        fault_description = flags.get("fault_description")
+        if isinstance(fault_code, (int, float)) and fault_code != 0:
+            self._attr_native_value = (
+                f"Fault: {fault_description or fault_code}"
+            )
+            self._attr_extra_state_attributes = _flag_attrs(flags)
+            self.async_write_ha_state()
+            return
+
+        # Walk severity-ordered list; first set bit wins.
+        first_active = None
+        for key, display in _WARNING_SEVERITY_ORDER:
+            if flags.get(key):
+                first_active = display
+                break
+        # PI18-specific warn_ flags (e.g. warn_line_fail) are not in the
+        # severity list because PI30 doesn't expose them by that name.
+        # Treat their presence as a secondary signal: count them but
+        # don't override the primary text unless nothing else is set.
+        pi18_warn_active = sum(
+            1 for k, v in flags.items()
+            if k.startswith("warn_") and v
+        )
+        pi30_active = sum(
+            1 for k, _ in _WARNING_SEVERITY_ORDER if flags.get(k)
+        )
+        total_active = pi30_active + pi18_warn_active
+
+        if first_active is None and pi18_warn_active == 0:
+            self._attr_native_value = "OK"
+        elif first_active is None:
+            # Only PI18 warn_* bits set — name the count.
+            self._attr_native_value = f"Warning: {pi18_warn_active} active"
+        elif total_active > 1:
+            self._attr_native_value = (
+                f"Warning: {first_active} (+{total_active - 1} more)"
+            )
+        else:
+            self._attr_native_value = f"Warning: {first_active}"
+
+        self._attr_extra_state_attributes = _flag_attrs(flags)
+        self.async_write_ha_state()
+
+
+def _flag_attrs(flags: dict) -> dict:
+    """Produce the attribute dict for the fault summary sensor.
+
+    Keeps booleans as booleans (HA renders them as on/off in the UI),
+    drops the internal ``_reserved_*`` bits, and adds a derived
+    ``active_count`` for easy template use.
+    """
+    attrs: dict = {}
+    active = 0
+    for key, value in flags.items():
+        if key.startswith("_reserved_"):
+            continue
+        if isinstance(value, bool):
+            attrs[key] = value
+            if value:
+                active += 1
+        else:
+            # Non-boolean fields (fault_code, fault_description, has_fault)
+            # — pass through verbatim.
+            attrs[key] = value
+    attrs["active_count"] = active
+    return attrs
+
+
 DIRECT_SENSORS = [
     DirectPVPowerSensor,
     DirectPV2PowerSensor,
@@ -657,6 +814,7 @@ DIRECT_SENSORS = [
     DirectDeviceStatusSensor,
     DirectBatteryPowerSensor,
     DirectOperatingModeSensor,
+    DirectInverterFaultSummarySensor,
 ]
 
 

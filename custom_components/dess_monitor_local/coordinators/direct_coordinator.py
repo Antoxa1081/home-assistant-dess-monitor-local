@@ -147,12 +147,20 @@ class DirectCoordinator(DataUpdateCoordinator):
                     # returns {} and the PV2 sensors stay unavailable —
                     # zero cost for the rest of users.
                     qpigs2 = await fetch_with_retry(device, 'QPIGS2', 'qpigs2')
+                    # QPIWS = warning/fault bitstring. PI18 inverters NAK
+                    # this and respond to QFWS instead; fetch both — the
+                    # one that doesn't apply just returns ``{}`` and
+                    # downstream sensors stay unavailable.
+                    qpiws = await fetch_with_retry(device, 'QPIWS', 'qpiws')
+                    qfws = await fetch_with_retry(device, 'QFWS', 'qfws')
                     return device, {
                         "timestamp": datetime.now(),
                         'qpigs': qpigs,
                         'qpiri': qpiri,
                         'qmod': qmod,
                         'qpigs2': qpigs2,
+                        'qpiws': qpiws,
+                        'qfws': qfws,
                     }
                     # return device, {
                     #     "timestamp": datetime.now(),

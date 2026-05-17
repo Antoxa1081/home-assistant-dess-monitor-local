@@ -77,6 +77,67 @@ def decode_qpigs2(ascii_str: str) -> dict:
     return dict(zip(_QPIGS2_FIELDS, ascii_str.split()))
 
 
+# PI30 QPIWS response — 32-character bitstring (some firmware variants
+# emit 36, with the trailing 4 bits reserved). Each bit ``ai`` flags a
+# specific warning or fault condition. The mapping follows the Voltronic
+# Axpert "QPIWS Warning Status" spec; "_reserved_*" entries are
+# acknowledged but typically clear.
+_QPIWS_FIELDS = (
+    "_reserved_0",                    # a0
+    "inverter_fault",                 # a1
+    "bus_over",                       # a2
+    "bus_under",                      # a3
+    "bus_soft_fail",                  # a4
+    "line_fail",                      # a5  (also surfaced via QPIGS b7_b0)
+    "opv_short",                      # a6
+    "inverter_voltage_too_low",       # a7
+    "inverter_voltage_too_high",      # a8
+    "over_temperature",               # a9
+    "fan_locked",                     # a10
+    "battery_voltage_high",           # a11
+    "battery_low_alarm",              # a12
+    "_reserved_13",                   # a13
+    "battery_under_shutdown",         # a14
+    "_reserved_15",                   # a15
+    "overload",                       # a16
+    "eeprom_fault",                   # a17
+    "inverter_over_current",          # a18
+    "inverter_soft_fail",             # a19
+    "self_test_fail",                 # a20
+    "op_dc_voltage_over",             # a21
+    "battery_open",                   # a22
+    "current_sensor_fail",            # a23
+    "battery_short",                  # a24
+    "power_limit",                    # a25
+    "pv_voltage_high",                # a26
+    "mppt_overload_fault",            # a27
+    "mppt_overload_warning",          # a28
+    "battery_too_low_to_charge",      # a29
+    "_reserved_30",                   # a30
+    "_reserved_31",                   # a31
+)
+
+
+def decode_qpiws(ascii_str: str) -> dict:
+    """Decode PI30 QPIWS — Warning Status — into a flat dict of named
+    boolean flags.
+
+    Tolerant to:
+      * leading/trailing whitespace
+      * variable response length (32 vs 36 vs 28 bits across firmwares)
+      * stray non-0/1 chars (e.g. CRC bleed-through, the same b10_b8
+        artefact noted in TECH_DEBT.md)
+
+    Bits beyond the known mapping are silently dropped; missing bits
+    default to ``False``.
+    """
+    bits = "".join(c for c in ascii_str if c in "01")
+    return {
+        name: (bool(int(bits[i])) if i < len(bits) else False)
+        for i, name in enumerate(_QPIWS_FIELDS)
+    }
+
+
 _QPIRI_FIELDS = (
     "rated_grid_voltage",
     "rated_input_current",
@@ -227,6 +288,8 @@ def decode_direct_response(command: str, input_str: str) -> dict:
             return decode_qvfw(ascii_str)
         case "QBEQI":
             return decode_qbeqi(ascii_str)
+        case "QPIWS":
+            return decode_qpiws(ascii_str)
         case _:
             return {"Raw": ascii_str}
 
