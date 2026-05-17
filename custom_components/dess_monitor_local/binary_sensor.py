@@ -303,9 +303,15 @@ class _AnyWarningBinarySensor(CoordinatorEntity, BinarySensorEntity):
         qpiws = dev.get("qpiws", {}) or {}
         qfws = dev.get("qfws", {}) or {}
 
-        # PI18 explicit fault_code wins immediately.
+        # PI18 / SMG-II explicit fault_code or warning_code wins immediately.
         fault_code = qfws.get("fault_code")
-        if isinstance(fault_code, (int, float)) and fault_code != 0:
+        warning_code = qfws.get("warning_code")
+        if (
+            (isinstance(fault_code, (int, float)) and fault_code != 0)
+            or (isinstance(warning_code, (int, float)) and warning_code != 0)
+            or bool(qfws.get("has_fault"))
+            or bool(qfws.get("has_warning"))
+        ):
             self._attr_is_on = True
             self.async_write_ha_state()
             return

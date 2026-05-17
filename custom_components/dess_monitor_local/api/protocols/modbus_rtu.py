@@ -193,8 +193,40 @@ _OPERATION_MODES = {
 }
 
 
-async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict]:
-    """Read SMG-II's two register blocks: 201–231 (sensors) and 300–337 (config)."""
+async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict, dict]:
+    """Read SMG-II's three register blocks: 100-115 (faults), 201-231
+    (sensors), 300-337 (config).
+
+    Returns (sensors, config, faults). Faults is a dict containing
+    ``fault_code`` / ``warning_code`` (32-bit DWORD each) plus derived
+    convenience booleans. Per the published SMG-II protocol the
+    per-bit decomposition isn't public — we surface the raw code and
+    a ``has_fault`` / ``has_warning`` flag, which is enough to drive
+    the integration's any_warning binary_sensor and fault summary.
+    """
+    # Block 100-115 covers fault_code (100, 2 words) and warning_code
+    # (108, 2 words) per the SMG-II Modbus map. Reading the whole 16-word
+    # span in one shot is cheaper than two separate transactions and
+    # captures any future fields in between.
+    try:
+        block_100 = await read_modbus_block(host, port, 100, 16)
+    except Exception:
+        block_100 = None
+
+    faults: dict = {}
+    if block_100 is not None and len(block_100) >= 10:
+        fault_code = (block_100[0] << 16) | block_100[1]   # regs 100-101
+        warning_code = (block_100[8] << 16) | block_100[9]  # regs 108-109
+        faults = {
+            "fault_code": fault_code,
+            "warning_code": warning_code,
+            "has_fault": fault_code != 0,
+            "has_warning": warning_code != 0,
+            "fault_description": (
+                f"SMG-II fault 0x{fault_code:08X}" if fault_code else None
+            ),
+        }
+
     block_200 = await read_modbus_block(host, port, 201, 31)
 
     def R200(addr: int) -> int:
@@ -260,7 +292,7 @@ async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict]:
         "eq_interval_days": R300(337),
     }
 
-    return sensors, config
+    return sensors, config, faults
 
 
 def smg2_to_qpigs(s: dict) -> dict:

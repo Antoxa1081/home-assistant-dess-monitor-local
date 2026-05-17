@@ -146,7 +146,7 @@ async def get_direct_data(
             return {}
 
         try:
-            sensors, config = await read_smg2_snapshot(host, port)
+            sensors, config, faults = await read_smg2_snapshot(host, port)
         except Exception:
             return {}
 
@@ -167,6 +167,14 @@ async def get_direct_data(
             else:
                 mode = OperatingMode.PowerOn
             return {"operating_mode": mode}
+        if command == "QFWS":
+            # Raw SMG-II fault/warning codes — published Modbus map
+            # doesn't expose individual bit assignments, so we surface
+            # the DWORDs as-is plus convenience flags. Good enough to
+            # drive any_warning and the fault summary "has fault"
+            # signal; for granular per-cause diagnostics, users should
+            # prefer the agent path (which decodes warn_* internally).
+            return faults
 
         return {"sensors": sensors, "config": config}
 

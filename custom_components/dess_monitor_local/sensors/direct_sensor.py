@@ -753,14 +753,27 @@ class DirectInverterFaultSummarySensor(DirectSensorBase):
     def _handle_coordinator_update(self) -> None:
         flags = self._merged_warnings()
 
-        # PI18 carries an explicit fault_code — if non-zero, it takes
-        # absolute priority over individual warning bits because it
-        # represents an active hardware fault.
+        # PI18 / SMG-II carry an explicit fault_code — if non-zero, it
+        # takes absolute priority over individual warning bits because
+        # it represents an active hardware fault. SMG-II additionally
+        # exposes warning_code as a separate DWORD; non-zero there is a
+        # "warning state" rather than fault but still warrants summary.
         fault_code = flags.get("fault_code")
         fault_description = flags.get("fault_description")
+        warning_code = flags.get("warning_code")
         if isinstance(fault_code, (int, float)) and fault_code != 0:
             self._attr_native_value = (
                 f"Fault: {fault_description or fault_code}"
+            )
+            self._attr_extra_state_attributes = _flag_attrs(flags)
+            self.async_write_ha_state()
+            return
+        if isinstance(warning_code, (int, float)) and warning_code != 0:
+            # SMG-II direct-Modbus path: the per-bit decomposition isn't
+            # public, so we show the raw hex. Users with agent access
+            # get a richer breakdown via warn_* flags instead.
+            self._attr_native_value = (
+                f"Warning: SMG-II code 0x{int(warning_code):08X}"
             )
             self._attr_extra_state_attributes = _flag_attrs(flags)
             self.async_write_ha_state()
