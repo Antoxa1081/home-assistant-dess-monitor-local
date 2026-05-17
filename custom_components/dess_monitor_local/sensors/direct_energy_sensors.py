@@ -296,11 +296,21 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
     @callback
     def _handle_coordinator_update(self) -> None:
         qpigs = self.data.get("qpigs", {})
-        qpiri = self.data.get("qpiri", {})
 
         try:
             current_raw = qpigs.get("battery_charging_current")
-            voltage_raw = qpiri.get("bulk_charging_voltage")
+            # Use the live terminal voltage from QPIGS, not the static
+            # bulk_charging_voltage setpoint from QPIRI. Reasons:
+            #  - Physical correctness: P = I × V_live. The bulk setpoint
+            #    (e.g. 28.4 V) overstates power during bulk-rise (V_live
+            #    is 26-28 V) and understates during float (V_live ~27.2 V).
+            #  - Reliability: qpiri can be empty for a tick after a CRC
+            #    fail / coordinator freeze, while qpigs already has the
+            #    full reading. Reading both forced the sensor to drop
+            #    valid charge samples whenever qpiri momentarily lagged,
+            #    causing Battery IN Energy to chronically undercount vs
+            #    Battery OUT (round-trip > 100% in the stats).
+            voltage_raw = qpigs.get("battery_voltage")
             if current_raw is None or voltage_raw is None:
                 raise ValueError("no data")
             current = float(current_raw)
