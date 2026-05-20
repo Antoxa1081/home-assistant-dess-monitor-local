@@ -802,7 +802,7 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
                 self._prev_effective_current_a = None
                 self._prev_ts = time.monotonic()
                 self._at_sync_ticks = 0
-                self._attr_native_value = bms_soc
+                self._attr_native_value = round(bms_soc, 2)
                 self.async_write_ha_state()
                 return
             # BMS read miss — fall through to integrator so the sensor
@@ -889,7 +889,18 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             else sync_voltage
         )
         at_voltage = current_voltage >= v_full_threshold
-        at_tail = 0 < signed_current_a <= tail_current_a
+        # "Tail" = current magnitude has dropped into the absorption-tail
+        # band. Use abs() so the condition is satisfied by ALL three
+        # genuinely-full states:
+        #   * absorption tail   — small positive (charger topping off)
+        #   * float idle        — exactly 0 A (or quantised to 0)
+        #   * float self-loss   — small negative (cell self-discharge)
+        # An earlier ``0 < signed_current_a`` lower bound excluded the
+        # 0 A float-idle case, so a fully-charged battery sitting in
+        # float never snapped — SoC froze at whatever sub-100 value the
+        # Coulomb counter happened to hold. A real discharge (current
+        # well below −tail) still fails the test and blocks the snap.
+        at_tail = abs(signed_current_a) <= tail_current_a
 
         if at_voltage and at_tail:
             self._at_sync_ticks += 1
@@ -917,7 +928,12 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
 
             soc_percent = (self._accumulated_charge_ah / max_capacity_ah) * 100
 
-        soc_percent = max(0.0, min(100.0, soc_percent))
+        # Round to 2 dp before publishing. The raw Coulomb ratio carries
+        # ~14 significant digits of floating-point noise; storing it
+        # verbatim makes the History/statistics graph auto-scale onto a
+        # meaningless 1e-13 jitter band. 0.01% resolution (≈0.02 Ah on a
+        # 200 Ah bank) is far finer than any real SoC accuracy.
+        soc_percent = round(max(0.0, min(100.0, soc_percent)), 2)
 
         self._attr_native_value = soc_percent
         self.async_write_ha_state()
