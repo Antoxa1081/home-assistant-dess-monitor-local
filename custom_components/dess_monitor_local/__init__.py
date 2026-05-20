@@ -13,7 +13,8 @@ from custom_components.dess_monitor_local import frame_log
 
 # List of platforms to support. There should be a matching .py file for each,
 # eg <cover.py> and <sensor.py>
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SELECT, Platform.BUTTON]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.NUMBER, Platform.SELECT, Platform.BUTTON,
+             Platform.SWITCH]
 
 type HubConfigEntry = ConfigEntry[hub.Hub]
 

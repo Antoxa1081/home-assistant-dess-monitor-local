@@ -76,11 +76,15 @@ _SYNC_DEBOUNCE_TICKS = 3
 # though the pack is truly idle.
 #
 # Counter-measure: when the inverter is clearly in float (terminal
-# voltage steady within ±FLOAT_VOLTAGE_WINDOW_V of the float setpoint)
-# AND the reported current is at or below the quantisation noise floor
-# (≤ FLOAT_NOISE_FLOOR_A), skip the trapezoidal step entirely. Any real
-# load above the floor exits the deadband immediately and integration
-# resumes.
+# voltage steady within ±window of the float setpoint) AND the reported
+# current is at or below the quantisation noise floor, skip the
+# trapezoidal step entirely. Any real load above the floor exits the
+# deadband immediately and integration resumes.
+#
+# These two values are only DEFAULTS now — they seed the user-facing
+# "vSoC Float Voltage Window" / "vSoC Float Noise Floor" number entities
+# and serve as the fallback when those entities are missing/unavailable.
+# The "vSoC Float Deadband" switch gates the whole mechanism.
 _FLOAT_VOLTAGE_WINDOW_V = 0.5
 _FLOAT_NOISE_FLOOR_A = 1.5
 
@@ -487,6 +491,21 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             f"number.{device_slug}_vsoc_full_charge_sync_voltage"
         )
         self._battery_mode_entity_id = f"select.{device_slug}_vsoc_battery_mode"
+        # Float-mode deadband controls (switch + two numbers). Defaults
+        # mirror the historical hardcoded constants so the feature is a
+        # no-op until the user touches the entities.
+        self._float_deadband_switch_id = (
+            f"switch.{device_slug}_vsoc_float_deadband"
+        )
+        self._float_voltage_window_id = (
+            f"number.{device_slug}_vsoc_float_voltage_window"
+        )
+        self._float_noise_floor_id = (
+            f"number.{device_slug}_vsoc_float_noise_floor"
+        )
+        self._float_deadband_enabled = True
+        self._float_voltage_window = _FLOAT_VOLTAGE_WINDOW_V
+        self._float_noise_floor = _FLOAT_NOISE_FLOOR_A
         self._battery_capacity_ah = None
         # User-defined override for the SoC snap-to-100% voltage. 0 = use
         # inverter's bulk_charging_voltage. See FullChargeSyncVoltageNumber
@@ -524,6 +543,15 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             [self._battery_mode_entity_id],
             self._handle_battery_mode_change,
         )
+        async_track_state_change_event(
+            self._hass,
+            [
+                self._float_deadband_switch_id,
+                self._float_voltage_window_id,
+                self._float_noise_floor_id,
+            ],
+            self._handle_float_deadband_change,
+        )
 
     async def async_added_to_hass(self) -> None:
         last_extra = await self.async_get_last_extra_data()
@@ -556,6 +584,9 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
 
         mode_state = self._hass.states.get(self._battery_mode_entity_id)
         self._update_battery_mode_from_state(mode_state)
+
+        # Float-deadband controls — read whatever's already restored.
+        self._refresh_float_deadband_config()
 
         self._restored = True
         await super().async_added_to_hass()
@@ -686,6 +717,39 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             self._at_sync_ticks = 0
         self._battery_mode = state.state
 
+    @callback
+    def _handle_float_deadband_change(self, event):
+        # Any of the three float-deadband controls changed — re-read all.
+        self._refresh_float_deadband_config()
+
+    def _refresh_float_deadband_config(self) -> None:
+        """Pull current values of the float-deadband switch + numbers.
+
+        Each control falls back to its historical default when the
+        entity is missing / unavailable, so the deadband keeps working
+        exactly as before for users who never touch the new controls."""
+        switch_state = self._hass.states.get(self._float_deadband_switch_id)
+        if switch_state is not None and switch_state.state in ("on", "off"):
+            self._float_deadband_enabled = switch_state.state == "on"
+
+        window_state = self._hass.states.get(self._float_voltage_window_id)
+        if window_state is not None and window_state.state not in (
+            "unknown", "unavailable", None
+        ):
+            try:
+                self._float_voltage_window = max(0.0, float(window_state.state))
+            except (ValueError, TypeError):
+                self._float_voltage_window = _FLOAT_VOLTAGE_WINDOW_V
+
+        floor_state = self._hass.states.get(self._float_noise_floor_id)
+        if floor_state is not None and floor_state.state not in (
+            "unknown", "unavailable", None
+        ):
+            try:
+                self._float_noise_floor = max(0.0, float(floor_state.state))
+            except (ValueError, TypeError):
+                self._float_noise_floor = _FLOAT_NOISE_FLOOR_A
+
     def get_floating_charging_voltage(self) -> float | None:
         try:
             qpiri = self.data.get("qpiri", {})
@@ -766,9 +830,10 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         # the quantisation noise floor; if both true, skip integration
         # this tick.
         in_float_deadband = (
-            floating_voltage is not None
-            and abs(current_voltage - floating_voltage) < _FLOAT_VOLTAGE_WINDOW_V
-            and abs(signed_current_a) <= _FLOAT_NOISE_FLOOR_A
+            self._float_deadband_enabled
+            and floating_voltage is not None
+            and abs(current_voltage - floating_voltage) < self._float_voltage_window
+            and abs(signed_current_a) <= self._float_noise_floor
         )
 
         # Coulombic efficiency. LFP is nearly lossless at the Coulomb

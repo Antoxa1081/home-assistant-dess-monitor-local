@@ -1,4 +1,5 @@
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -57,6 +58,7 @@ class BatteryModeSelect(SelectEntity, RestoreEntity):
 
     _attr_options = list(BATTERY_MODES)
     _attr_icon = "mdi:battery-sync"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, inverter_device: InverterDevice):
         self._inverter_device = inverter_device
