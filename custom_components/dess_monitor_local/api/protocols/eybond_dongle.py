@@ -27,9 +27,13 @@ instance; ``devaddr`` in the URI selects which inverter on the RS485 bus
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
+import os
+import re
 import socket
 import struct
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
@@ -166,6 +170,53 @@ def _detect_local_ip() -> str:
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def _resolve_broadcast_for_announce_ip(announce_ip: str) -> str:
+    """Best-effort broadcast resolution by matching announce_ip to local subnets."""
+    try:
+        target = ipaddress.IPv4Address(announce_ip.strip())
+    except ValueError:
+        return DEFAULT_BROADCAST
+
+    # Windows: parse ipconfig
+    if os.name == "nt":
+        try:
+            # shell=True handles Windows command lookup; cp866/utf-8 covers most locales
+            raw = subprocess.check_output("ipconfig", shell=True).decode("cp866", errors="ignore")
+            current_ip = None
+            for line in raw.splitlines():
+                if "IPv4" in line:
+                    m = re.search(r":\s*([\d\.]+)", line)
+                    if m:
+                        current_ip = m.group(1)
+                elif "Subnet Mask" in line or "Маска подсети" in line:
+                    m = re.search(r":\s*([\d\.]+)", line)
+                    if m and current_ip:
+                        try:
+                            net = ipaddress.IPv4Network(f"{current_ip}/{m.group(1)}", strict=False)
+                            if target in net:
+                                return str(net.broadcast_address)
+                        except ValueError:
+                            pass
+                    current_ip = None
+        except Exception:
+            pass
+    # Linux: parse ip addr
+    else:
+        try:
+            raw = subprocess.check_output(["ip", "-4", "addr", "show"]).decode("utf-8", errors="ignore")
+            for m in re.finditer(r"inet\s+([\d\.]+)/(\d+)", raw):
+                try:
+                    net = ipaddress.IPv4Network(f"{m.group(1)}/{m.group(2)}", strict=False)
+                    if target in net:
+                        return str(net.broadcast_address)
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+
+    return DEFAULT_BROADCAST
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +373,16 @@ class EybondManager:
                     "Docker bridge networking returns container IP, not host)",
                     announce_ip,
                 )
+
+        if self.broadcast == DEFAULT_BROADCAST:
+            resolved = _resolve_broadcast_for_announce_ip(announce_ip)
+            if resolved != DEFAULT_BROADCAST:
+                _LOGGER.info(
+                    "EyBond: broadcast auto-resolved: announce=%s broadcast=%s",
+                    announce_ip, resolved,
+                )
+                self.broadcast = resolved
+
         payload = f"set>server={announce_ip}:{self.bind_port};".encode("ascii")
         _LOGGER.info(
             "EyBond: UDP announcer START -> %s:%d every %.1fs, payload=%r",
