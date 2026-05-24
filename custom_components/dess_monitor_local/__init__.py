@@ -9,6 +9,9 @@ from homeassistant.core import HomeAssistant
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 from . import hub
 from custom_components.dess_monitor_local.api.commands.direct_command_queue import CommandQueue
+from custom_components.dess_monitor_local.api.protocols.eybond_dongle import (
+    shutdown_all_eybond_managers,
+)
 from custom_components.dess_monitor_local import frame_log
 
 # List of platforms to support. There should be a matching .py file for each,
@@ -58,6 +61,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Drop the diagnostic frame buffer too — keeps memory clean across
     # reloads and avoids leaking stale frames from a previous device URI.
     frame_log.clear()
+    # Free any EyBond TCP listener / UDP announcer so a reload can rebind
+    # port 8899 cleanly.
+    await shutdown_all_eybond_managers()
 
     return unload_ok
 

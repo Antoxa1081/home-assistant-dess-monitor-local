@@ -40,6 +40,7 @@ from .protocols.elfin_tcp import (
     parse_tcp_uri,
     send_voltronic_set_command,
 )
+from .protocols.eybond_dongle import send_eybond_set_command, send_eybond_voltronic
 from .protocols.modbus_rtu import (
     parse_modbus_uri,
     read_smg2_snapshot,
@@ -182,6 +183,19 @@ async def get_direct_data(
     if device.startswith("pi18://") or device.startswith("pi18-serial://"):
         return await query_pi18(device, command, timeout, strict_crc=strict_crc)
 
+    # ---- eybond:// — Voltronic PI30 via SmartESS WiFi dongle ----
+    # The dongle initiates the TCP connection; we wrap the ASCII command
+    # in an EyBond FC=4 forward and unwrap the response, which is the
+    # same ASCII frame the Elfin path would receive.
+    if device.startswith("eybond://"):
+        response = await send_eybond_voltronic(device, command, timeout)
+        if not response:
+            return {}
+        try:
+            return decode_direct_response(command, response) or {}
+        except Exception:
+            return {}
+
     # ---- Voltronic Axpert: Elfin TCP or serial ----
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
@@ -259,8 +273,10 @@ async def set_direct_data(
     Modbus / agent variants live in their own ``set_*`` helpers below;
     this stays a thin TCP-only path so the legacy callers keep working.
     """
+    if device.startswith("eybond://"):
+        return await send_eybond_set_command(device, command_str, timeout)
     if not device.startswith("tcp://"):
-        return {"error": "only tcp://host:port supported for set_direct_data"}
+        return {"error": "set_direct_data only supports tcp:// and eybond://"}
     host, port = parse_tcp_uri(device)
     return await send_voltronic_set_command(host, port, command_str, timeout)
 

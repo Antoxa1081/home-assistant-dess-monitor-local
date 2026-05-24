@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import serial.tools.list_ports
 import voluptuous as vol
@@ -28,6 +28,9 @@ from .const import (
     CONF_PORT,
     CONF_SERIAL_DEVICE,
     CONF_AGENT_DEVICE_ID,
+    CONF_EYBOND_DEVADDR,
+    CONF_EYBOND_BROADCAST,
+    CONF_EYBOND_ANNOUNCE_IP,
     CONF_UPDATE_INTERVAL,
     CONF_STRICT_CRC,
     PROTOCOL_TCP_ELFIN,
@@ -35,9 +38,15 @@ from .const import (
     PROTOCOL_PI18,
     PROTOCOL_AGENT,
     PROTOCOL_SERIAL,
+    PROTOCOL_EYBOND,
     PROTOCOLS,
     DEFAULT_TCP_PORT,
     DEFAULT_AGENT_PORT,
+    DEFAULT_EYBOND_BIND_HOST,
+    DEFAULT_EYBOND_BIND_PORT,
+    DEFAULT_EYBOND_DEVADDR,
+    DEFAULT_EYBOND_BROADCAST,
+    DEFAULT_EYBOND_ANNOUNCE_IP,
     DEFAULT_UPDATE_INTERVAL,
     DEFAULT_STRICT_CRC,
     MIN_UPDATE_INTERVAL,
@@ -47,7 +56,12 @@ from .const import (
 # Protocols where the request/response framing carries a CRC and the
 # strict-CRC option is meaningful. Modbus has its own integrated check
 # already; agent receives pre-decoded JSON.
-_CRC_CAPABLE_PROTOCOLS = (PROTOCOL_TCP_ELFIN, PROTOCOL_SERIAL, PROTOCOL_PI18)
+_CRC_CAPABLE_PROTOCOLS = (
+    PROTOCOL_TCP_ELFIN,
+    PROTOCOL_SERIAL,
+    PROTOCOL_PI18,
+    PROTOCOL_EYBOND,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +77,9 @@ def _build_device_uri(
     port: int,
     serial_device: str,
     agent_device_id: str,
+    eybond_devaddr: int = DEFAULT_EYBOND_DEVADDR,
+    eybond_broadcast: str = DEFAULT_EYBOND_BROADCAST,
+    eybond_announce_ip: str = DEFAULT_EYBOND_ANNOUNCE_IP,
 ) -> str:
     """Compose the storage `device` string from form fields."""
     if protocol == PROTOCOL_SERIAL:
@@ -75,6 +92,21 @@ def _build_device_uri(
         return f"pi18://{host}:{port}"
     if protocol == PROTOCOL_AGENT:
         return f"agent://{host}:{port}/{agent_device_id}"
+    if protocol == PROTOCOL_EYBOND:
+        # host = bind interface (usually 0.0.0.0); port = listen port.
+        # devaddr selects the RS485 slave; broadcast is the UDP target.
+        # announce_ip is what we tell the dongle to connect back to —
+        # critical for Docker bridge mode where auto-detect returns the
+        # container IP instead of the host LAN IP.
+        uri = f"eybond://{host}:{port}/{eybond_devaddr}"
+        params: list[str] = []
+        if eybond_broadcast and eybond_broadcast != DEFAULT_EYBOND_BROADCAST:
+            params.append(f"broadcast={eybond_broadcast}")
+        if eybond_announce_ip:
+            params.append(f"announce={eybond_announce_ip}")
+        if params:
+            uri += "?" + "&".join(params)
+        return uri
     return ""
 
 
@@ -88,6 +120,9 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         CONF_PORT: DEFAULT_TCP_PORT,
         CONF_SERIAL_DEVICE: "",
         CONF_AGENT_DEVICE_ID: "",
+        CONF_EYBOND_DEVADDR: DEFAULT_EYBOND_DEVADDR,
+        CONF_EYBOND_BROADCAST: DEFAULT_EYBOND_BROADCAST,
+        CONF_EYBOND_ANNOUNCE_IP: DEFAULT_EYBOND_ANNOUNCE_IP,
     }
     if not device:
         return blank
@@ -127,6 +162,26 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
             CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
             CONF_SERIAL_DEVICE: "",
             CONF_AGENT_DEVICE_ID: "",
+        }
+    if device.startswith("eybond://"):
+        parsed = urlparse(device)
+        devaddr_str = (parsed.path or "/").lstrip("/")
+        try:
+            devaddr = int(devaddr_str) if devaddr_str else DEFAULT_EYBOND_DEVADDR
+        except ValueError:
+            devaddr = DEFAULT_EYBOND_DEVADDR
+        query = parse_qs(parsed.query or "")
+        broadcast = (query.get("broadcast") or [DEFAULT_EYBOND_BROADCAST])[0]
+        announce_ip = (query.get("announce") or [DEFAULT_EYBOND_ANNOUNCE_IP])[0]
+        return {
+            CONF_PROTOCOL: PROTOCOL_EYBOND,
+            CONF_HOST: parsed.hostname or DEFAULT_EYBOND_BIND_HOST,
+            CONF_PORT: parsed.port or DEFAULT_EYBOND_BIND_PORT,
+            CONF_SERIAL_DEVICE: "",
+            CONF_AGENT_DEVICE_ID: "",
+            CONF_EYBOND_DEVADDR: devaddr,
+            CONF_EYBOND_BROADCAST: broadcast,
+            CONF_EYBOND_ANNOUNCE_IP: announce_ip,
         }
     # Legacy "host:port" stored without scheme — assume Elfin TCP.
     if ":" in device and not device.startswith("/") and not device.startswith("\\"):
@@ -193,14 +248,20 @@ async def _build_connection_schema(
             )
         )
     else:
-        default_port = (
-            DEFAULT_AGENT_PORT if protocol == PROTOCOL_AGENT else DEFAULT_TCP_PORT
-        )
+        if protocol == PROTOCOL_AGENT:
+            default_port = DEFAULT_AGENT_PORT
+        elif protocol == PROTOCOL_EYBOND:
+            default_port = DEFAULT_EYBOND_BIND_PORT
+        else:
+            default_port = DEFAULT_TCP_PORT
+
+        if protocol == PROTOCOL_EYBOND:
+            host_default = defaults.get(CONF_HOST) or DEFAULT_EYBOND_BIND_HOST
+        else:
+            host_default = defaults.get(CONF_HOST) or vol.UNDEFINED
+
         schema[
-            vol.Required(
-                CONF_HOST,
-                default=defaults.get(CONF_HOST) or vol.UNDEFINED,
-            )
+            vol.Required(CONF_HOST, default=host_default)
         ] = cv.string
         schema[
             vol.Required(
@@ -213,6 +274,34 @@ async def _build_connection_schema(
                 vol.Required(
                     CONF_AGENT_DEVICE_ID,
                     default=defaults.get(CONF_AGENT_DEVICE_ID) or vol.UNDEFINED,
+                )
+            ] = cv.string
+        if protocol == PROTOCOL_EYBOND:
+            schema[
+                vol.Required(
+                    CONF_EYBOND_DEVADDR,
+                    default=defaults.get(CONF_EYBOND_DEVADDR, DEFAULT_EYBOND_DEVADDR),
+                )
+            ] = NumberSelector(
+                NumberSelectorConfig(
+                    min=1, max=16, step=1, mode=NumberSelectorMode.BOX
+                )
+            )
+            schema[
+                vol.Required(
+                    CONF_EYBOND_BROADCAST,
+                    default=defaults.get(CONF_EYBOND_BROADCAST, DEFAULT_EYBOND_BROADCAST),
+                )
+            ] = cv.string
+            # Empty = auto-detect (correct on bare-metal HA). In Docker
+            # bridge mode this must be set to the host's LAN IP so the
+            # dongle can connect back through the NAT/port-mapping.
+            schema[
+                vol.Optional(
+                    CONF_EYBOND_ANNOUNCE_IP,
+                    default=defaults.get(
+                        CONF_EYBOND_ANNOUNCE_IP, DEFAULT_EYBOND_ANNOUNCE_IP
+                    ),
                 )
             ] = cv.string
 
@@ -245,7 +334,13 @@ def _validate_connection(
     if protocol == PROTOCOL_SERIAL and not serial_device:
         errors[CONF_SERIAL_DEVICE] = "serial_required"
     if (
-        protocol in (PROTOCOL_TCP_ELFIN, PROTOCOL_MODBUS, PROTOCOL_PI18, PROTOCOL_AGENT)
+        protocol in (
+            PROTOCOL_TCP_ELFIN,
+            PROTOCOL_MODBUS,
+            PROTOCOL_PI18,
+            PROTOCOL_AGENT,
+            PROTOCOL_EYBOND,
+        )
         and not host
     ):
         errors[CONF_HOST] = "host_required"
@@ -317,6 +412,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
                 serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
                 agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
+                eybond_devaddr = int(
+                    user_input.get(CONF_EYBOND_DEVADDR, DEFAULT_EYBOND_DEVADDR)
+                )
+                eybond_broadcast = (
+                    user_input.get(CONF_EYBOND_BROADCAST) or DEFAULT_EYBOND_BROADCAST
+                ).strip()
+                eybond_announce_ip = (
+                    user_input.get(CONF_EYBOND_ANNOUNCE_IP)
+                    or DEFAULT_EYBOND_ANNOUNCE_IP
+                ).strip()
                 update_interval = int(
                     user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                 )
@@ -325,7 +430,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
                 device_value = _build_device_uri(
-                    protocol, host, port, serial_device, agent_device_id
+                    protocol, host, port, serial_device, agent_device_id,
+                    eybond_devaddr, eybond_broadcast, eybond_announce_ip,
                 )
 
                 return self.async_create_entry(
@@ -338,6 +444,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PORT: port,
                         CONF_SERIAL_DEVICE: serial_device,
                         CONF_AGENT_DEVICE_ID: agent_device_id,
+                        CONF_EYBOND_DEVADDR: eybond_devaddr,
+                        CONF_EYBOND_BROADCAST: eybond_broadcast,
+                        CONF_EYBOND_ANNOUNCE_IP: eybond_announce_ip,
                         CONF_UPDATE_INTERVAL: update_interval,
                         CONF_STRICT_CRC: strict_crc,
                     },
@@ -380,6 +489,18 @@ class OptionsFlow(config_entries.OptionsFlow):
             CONF_AGENT_DEVICE_ID: opts.get(
                 CONF_AGENT_DEVICE_ID, parsed[CONF_AGENT_DEVICE_ID]
             ),
+            CONF_EYBOND_DEVADDR: opts.get(
+                CONF_EYBOND_DEVADDR,
+                parsed.get(CONF_EYBOND_DEVADDR, DEFAULT_EYBOND_DEVADDR),
+            ),
+            CONF_EYBOND_BROADCAST: opts.get(
+                CONF_EYBOND_BROADCAST,
+                parsed.get(CONF_EYBOND_BROADCAST, DEFAULT_EYBOND_BROADCAST),
+            ),
+            CONF_EYBOND_ANNOUNCE_IP: opts.get(
+                CONF_EYBOND_ANNOUNCE_IP,
+                parsed.get(CONF_EYBOND_ANNOUNCE_IP, DEFAULT_EYBOND_ANNOUNCE_IP),
+            ),
             CONF_UPDATE_INTERVAL: opts.get(
                 CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
             ),
@@ -412,6 +533,16 @@ class OptionsFlow(config_entries.OptionsFlow):
                 port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
                 serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
                 agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
+                eybond_devaddr = int(
+                    user_input.get(CONF_EYBOND_DEVADDR, DEFAULT_EYBOND_DEVADDR)
+                )
+                eybond_broadcast = (
+                    user_input.get(CONF_EYBOND_BROADCAST) or DEFAULT_EYBOND_BROADCAST
+                ).strip()
+                eybond_announce_ip = (
+                    user_input.get(CONF_EYBOND_ANNOUNCE_IP)
+                    or DEFAULT_EYBOND_ANNOUNCE_IP
+                ).strip()
                 update_interval = int(
                     user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
                 )
@@ -420,7 +551,8 @@ class OptionsFlow(config_entries.OptionsFlow):
                 )
 
                 device_value = _build_device_uri(
-                    protocol, host, port, serial_device, agent_device_id
+                    protocol, host, port, serial_device, agent_device_id,
+                    eybond_devaddr, eybond_broadcast, eybond_announce_ip,
                 )
 
                 return self.async_create_entry(
@@ -432,6 +564,9 @@ class OptionsFlow(config_entries.OptionsFlow):
                         CONF_PORT: port,
                         CONF_SERIAL_DEVICE: serial_device,
                         CONF_AGENT_DEVICE_ID: agent_device_id,
+                        CONF_EYBOND_DEVADDR: eybond_devaddr,
+                        CONF_EYBOND_BROADCAST: eybond_broadcast,
+                        CONF_EYBOND_ANNOUNCE_IP: eybond_announce_ip,
                         CONF_UPDATE_INTERVAL: update_interval,
                         CONF_STRICT_CRC: strict_crc,
                     },
