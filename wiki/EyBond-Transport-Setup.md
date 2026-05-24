@@ -45,17 +45,17 @@ Open Home Assistant:
 
 Select **Voltronic / Axpert PI30**.
 
-![Choose protocol](images/eybond-step-1-protocol.png)
+<img src="images/eybond-step-1-protocol.png" alt="Choose protocol" width="30%">
 
 ### 2. Choose Transport
 
 Select **EyBond / SmartESS Wi-Fi dongle**.
 
-![Choose transport](images/eybond-step-2-transport.png)
+<img src="images/eybond-step-2-transport.png" alt="Choose transport" width="30%">
 
 ### 3. Configure Connection Settings
 
-![Connection settings](images/eybond-step-3-settings.png)
+<img src="images/eybond-step-3-settings.png" alt="Connection settings" width="30%">
 
 Fields:
 
