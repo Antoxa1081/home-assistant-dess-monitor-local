@@ -38,7 +38,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
-from ..crc import crc16_voltronic
+from ..crc import build_pi30_frame
+from ..decoders.pi18 import build_request_frame
+from ...const import PROTOCOL_PI18
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,10 +127,6 @@ def _build_forward2device(
     return _encode_header(tid, devcode, total_len, devaddr, FC_FORWARD2DEVICE) + payload
 
 
-def _build_voltronic_frame(command: str) -> bytes:
-    """Same ASCII framing the Elfin TCP / serial paths use."""
-    body = command.encode("ascii")
-    return body + crc16_voltronic(body) + b"\r"
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +177,9 @@ def _resolve_broadcast_for_announce_ip(announce_ip: str) -> str:
     except ValueError:
         return DEFAULT_BROADCAST
 
+    if target.is_loopback:
+        return DEFAULT_BROADCAST
+
     # Windows: parse ipconfig
     if os.name == "nt":
         try:
@@ -215,6 +216,21 @@ def _resolve_broadcast_for_announce_ip(announce_ip: str) -> str:
                     pass
         except Exception:
             pass
+
+    # Heuristic fallback: if no matching subnet found (common in Docker without host networking),
+    # assume a standard /24 network and use .255. This is much more likely to work
+    # than 255.255.255.255 which often gets trapped inside the container.
+    try:
+        parts = str(target).split(".")
+        if len(parts) == 4:
+            heuristic = ".".join(parts[:3]) + ".255"
+            _LOGGER.debug(
+                "EyBond: could not find subnet for %s, using heuristic broadcast %s",
+                announce_ip, heuristic
+            )
+            return heuristic
+    except Exception:
+        pass
 
     return DEFAULT_BROADCAST
 
@@ -374,11 +390,11 @@ class EybondManager:
                     announce_ip,
                 )
 
-        if self.broadcast == DEFAULT_BROADCAST:
+        if self.broadcast == "255.255.255.255" or self.broadcast == DEFAULT_BROADCAST:
             resolved = _resolve_broadcast_for_announce_ip(announce_ip)
-            if resolved != DEFAULT_BROADCAST:
+            if resolved and resolved != "255.255.255.255":
                 _LOGGER.info(
-                    "EyBond: broadcast auto-resolved: announce=%s broadcast=%s",
+                    "EyBond: broadcast resolved: announce=%s broadcast=%s",
                     announce_ip, resolved,
                 )
                 self.broadcast = resolved
@@ -544,12 +560,10 @@ class EybondManager:
         except asyncio.CancelledError:
             pass
 
-    async def send_voltronic(
-        self, devaddr: int, command: str, timeout: float
-    ) -> str | None:
-        """Send a Voltronic ASCII command via FC=4, return the response as
-        a string without the trailing CR (matches Elfin TCP shape), or
-        ``None`` on transport-level failure."""
+    async def send_frame(
+        self, devaddr: int, v_frame: bytes, timeout: float, context: str = ""
+    ) -> bytes | None:
+        """Send a raw frame via FC=4, return the response as bytes."""
         await self.ensure_started()
 
         if self._session is None:
@@ -557,14 +571,14 @@ class EybondManager:
             _LOGGER.info(
                 "EyBond: no dongle connected yet, waiting up to %.1fs for %s "
                 "(devaddr=%d) — UDP announcer is broadcasting",
-                wait, command, devaddr,
+                wait, context or "frame", devaddr,
             )
             try:
                 await asyncio.wait_for(self._session_ready.wait(), timeout=wait)
             except asyncio.TimeoutError:
                 _LOGGER.warning(
                     "EyBond: no dongle within %.1fs, dropping %s devaddr=%d",
-                    wait, command, devaddr,
+                    wait, context or "frame", devaddr,
                 )
                 return None
 
@@ -572,11 +586,10 @@ class EybondManager:
         if sess is None:
             _LOGGER.warning(
                 "EyBond: session vanished before sending %s devaddr=%d",
-                command, devaddr,
+                context or "frame", devaddr,
             )
             return None
 
-        v_frame = _build_voltronic_frame(command)
         async with sess.send_lock:
             tid = sess.next_tid()
             frame = _build_forward2device(tid, v_frame, devaddr=devaddr)
@@ -588,14 +601,14 @@ class EybondManager:
                 await sess.writer.drain()
                 _LOGGER.debug(
                     "EyBond TX [%s] %s tid=%d devaddr=%d v_frame=%s wrapped=%s",
-                    sess.peer, command, tid, devaddr,
+                    sess.peer, context or "frame", tid, devaddr,
                     v_frame.hex(), frame.hex(),
                 )
             except (ConnectionError, OSError) as err:
                 sess.pending.pop(tid, None)
                 _LOGGER.warning(
                     "EyBond: write %s devaddr=%d to %s failed: %s",
-                    command, devaddr, sess.peer, err,
+                    context or "frame", devaddr, sess.peer, err,
                 )
                 return None
             try:
@@ -604,29 +617,21 @@ class EybondManager:
                 sess.pending.pop(tid, None)
                 _LOGGER.warning(
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",
-                    command, devaddr, tid, timeout,
+                    context or "frame", devaddr, tid, timeout,
                 )
                 return None
             except ConnectionError as err:
                 _LOGGER.info(
                     "EyBond: %s devaddr=%d aborted (session lost): %s",
-                    command, devaddr, err,
+                    context or "frame", devaddr, err,
                 )
                 return None
 
-        # FC=4 payload is the inner Voltronic frame ('(' + body + CRC + CR).
-        # Match the Elfin path: keep everything up to the first CR, decode.
-        body, _, _ = raw.partition(b"\r")
-        response = body.decode("ascii", errors="ignore")
         _LOGGER.debug(
-            "EyBond RX-payload %s devaddr=%d (%d bytes raw) ascii=%r",
-            command, devaddr, len(raw), response,
+            "EyBond RX-payload %s devaddr=%d (%d bytes raw)",
+            context or "frame", devaddr, len(raw),
         )
-        if "NAK" in response:
-            _LOGGER.info(
-                "EyBond: %s devaddr=%d → NAK from inverter", command, devaddr
-            )
-        return response
+        return raw
 
 
 # ---------------------------------------------------------------------------
@@ -650,18 +655,26 @@ async def _get_manager(
             mgr = EybondManager(bind_host, bind_port, broadcast, announce_ip)
             _managers[key] = mgr
         else:
-            if mgr.broadcast != broadcast:
+            # Update parameters if they changed in the URI.
+            # If broadcast is DEFAULT_BROADCAST (255.255.255.255), we don't overwrite
+            # an already resolved specific broadcast address.
+            if broadcast != DEFAULT_BROADCAST and mgr.broadcast != broadcast:
                 _LOGGER.info(
                     "EyBond: broadcast target changed %s -> %s",
                     mgr.broadcast, broadcast,
                 )
-            mgr.broadcast = broadcast
+                mgr.broadcast = broadcast
+
             if mgr.announce_ip != announce_ip:
                 _LOGGER.info(
                     "EyBond: announce IP changed %s -> %s (restart announcer)",
                     mgr.announce_ip or "<auto>", announce_ip or "<auto>",
                 )
                 mgr.announce_ip = announce_ip
+                # If broadcast was also default, reset it to force re-resolution for the new IP
+                if broadcast == DEFAULT_BROADCAST:
+                    mgr.broadcast = DEFAULT_BROADCAST
+
                 # Restart announcer so the new IP takes effect immediately.
                 await mgr._stop_announcer()
                 if mgr._session is None and mgr._server is not None:
@@ -670,60 +683,58 @@ async def _get_manager(
     return mgr
 
 
-async def send_eybond_voltronic(
-    device: str, command: str, timeout: float = DEFAULT_TIMEOUT
-) -> str | None:
-    """Parse the URI, get/create the manager, send the command."""
+async def send_eybond_bytes(
+    device: str, v_frame: bytes, timeout: float = DEFAULT_TIMEOUT, context: str = ""
+) -> bytes | None:
+    """Parse the URI, get/create the manager, send the raw frame."""
     bind_host, bind_port, devaddr, broadcast, announce_ip = parse_eybond_uri(device)
+
     _LOGGER.debug(
-        "EyBond: dispatch %s for device=%s "
+        "EyBond: dispatch frame %s for device=%s "
         "(bind=%s:%d devaddr=%d broadcast=%s announce=%s)",
-        command, device, bind_host, bind_port, devaddr, broadcast,
+        context or v_frame.hex(), device, bind_host, bind_port, devaddr, broadcast,
         announce_ip or "<auto>",
     )
     try:
         mgr = await _get_manager(bind_host, bind_port, broadcast, announce_ip)
     except OSError as err:
         msg = str(err)
-        # Once-per-backoff-window error; subsequent attempts surface as
-        # debug only (see ensure_started's backoff branch) so the log
-        # doesn't drown.
         if "backoff active" in msg:
-            _LOGGER.debug("EyBond: %s — skipping %s", msg, command)
+            _LOGGER.debug("EyBond: %s — skipping %s", msg, context or "frame")
         else:
             _LOGGER.error(
-                "EyBond: TCP bind FAILED on %s:%d (%s). Likely causes:\n"
-                "  - another process is bound to this port "
-                "(check: ss -ltnp '( sport = :%d )' or netstat)\n"
-                "  - a leftover test script (test-anern-local.py / "
-                "test-smg2-local.py) is still running\n"
-                "  - a second HA instance with eybond:// is bound to "
-                "the same IP\n"
-                "  - HA crashed and the previous listener is in TIME_WAIT "
-                "(wait %ds for the kernel to release it)\n"
-                "Suppressing further bind attempts for %ds.",
-                bind_host, bind_port, err, bind_port,
-                int(BIND_FAILURE_BACKOFF), int(BIND_FAILURE_BACKOFF),
+                "EyBond: TCP bind FAILED on %s:%d (%s). Suppressing further bind attempts for %ds.",
+                bind_host, bind_port, err, int(BIND_FAILURE_BACKOFF),
             )
         return None
-    return await mgr.send_voltronic(devaddr, command, timeout)
+    return await mgr.send_frame(devaddr, v_frame, timeout, context=context)
+
+
+async def send_eybond_voltronic(
+    device: str, command: str, timeout: float = DEFAULT_TIMEOUT, protocol: str | None = None
+) -> bytes | None:
+    """Backward-compatible wrapper for Voltronic/PI18 commands."""
+    if protocol == PROTOCOL_PI18 or device.startswith("eybond-pi18://"):
+        v_frame = build_request_frame(command)
+    else:
+        v_frame = build_pi30_frame(command)
+    return await send_eybond_bytes(device, v_frame, timeout, context=command)
 
 
 async def send_eybond_set_command(
-    device: str, command: str, timeout: float = 30.0
+    device: str, command: str, timeout: float = 30.0, protocol: str | None = None
 ) -> dict:
-    """Send a Voltronic set command (POPxx, PCPxx, ...) and classify the
-    ACK/NAK response. Mirrors :func:`elfin_tcp.send_voltronic_set_command`."""
-    response = await send_eybond_voltronic(device, command, timeout)
+    """Send a set command and classify the ACK/NAK response."""
+    response = await send_eybond_voltronic(device, command, timeout, protocol=protocol)
     if response is None:
         return {"error": "no response"}
-    if "ACK" in response:
+    if b"ACK" in response or response.startswith(b"^1"):
         return {"status": "ACK"}
-    if "NAK" in response:
+    if b"NAK" in response or response.startswith(b"^0"):
         return {"status": "NAK"}
     if not response:
         return {"error": "empty response"}
-    return {"raw": response}
+    return {"raw": response.decode("ascii", errors="ignore")}
 
 
 async def shutdown_all_eybond_managers() -> None:

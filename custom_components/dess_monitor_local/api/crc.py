@@ -63,6 +63,12 @@ def crc16_modbus(data: bytes) -> int:
     return crc & 0xFFFF
 
 
+def build_pi30_frame(command: str) -> bytes:
+    """ASCII framing for Voltronic PI30 (command + CRC + CR)."""
+    body = command.encode("ascii")
+    return body + crc16_voltronic(body) + b"\r"
+
+
 # ---------------------------------------------------------------------------
 # Frame-level validators (response-side)
 # ---------------------------------------------------------------------------

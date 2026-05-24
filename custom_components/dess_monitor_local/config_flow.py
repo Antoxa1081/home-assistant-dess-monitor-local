@@ -116,6 +116,17 @@ def _build_device_uri(
     if protocol == PROTOCOL_PI18:
         if transport == TRANSPORT_SERIAL:
             return f"pi18-serial://{serial_device}"
+        if transport == TRANSPORT_EYBOND:
+            # eybond-pi18://bind_host:bind_port/devaddr?params
+            uri = f"eybond-pi18://{host}:{port}/{eybond_devaddr}"
+            params: list[str] = []
+            if eybond_broadcast and eybond_broadcast != DEFAULT_EYBOND_BROADCAST:
+                params.append(f"broadcast={eybond_broadcast}")
+            if eybond_announce_ip:
+                params.append(f"announce={eybond_announce_ip}")
+            if params:
+                uri += "?" + "&".join(params)
+            return uri
         return f"pi18://{host}:{port}"
     if protocol != PROTOCOL_VOLTRONIC:
         return ""
@@ -208,7 +219,8 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
             CONF_SERIAL_DEVICE: "",
             CONF_AGENT_DEVICE_ID: "",
         }
-    if device.startswith("eybond://"):
+    if device.startswith("eybond-pi18://") or device.startswith("eybond://"):
+        is_pi18 = device.startswith("eybond-pi18://")
         parsed = urlparse(device)
         devaddr_str = (parsed.path or "/").lstrip("/")
         try:
@@ -219,7 +231,7 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         broadcast = (query.get("broadcast") or [DEFAULT_EYBOND_BROADCAST])[0]
         announce_ip = (query.get("announce") or [DEFAULT_EYBOND_ANNOUNCE_IP])[0]
         return {
-            CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+            CONF_PROTOCOL: PROTOCOL_PI18 if is_pi18 else PROTOCOL_VOLTRONIC,
             CONF_TRANSPORT: TRANSPORT_EYBOND,
             CONF_HOST: parsed.hostname or DEFAULT_EYBOND_BIND_HOST,
             CONF_PORT: parsed.port or DEFAULT_EYBOND_BIND_PORT,
