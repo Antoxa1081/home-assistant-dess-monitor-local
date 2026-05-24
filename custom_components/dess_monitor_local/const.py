@@ -6,6 +6,7 @@ DOMAIN = "dess_monitor_local"
 CONF_NAME = "name"
 CONF_DEVICE = "device"
 CONF_PROTOCOL = "protocol"
+CONF_TRANSPORT = "transport"
 CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_SERIAL_DEVICE = "serial_device"
@@ -17,21 +18,60 @@ CONF_UPDATE_INTERVAL = "update_interval"
 CONF_STRICT_CRC = "strict_crc"
 
 # Supported protocol identifiers
-PROTOCOL_TCP_ELFIN = "tcp_elfin"
+PROTOCOL_VOLTRONIC = "voltronic"
 PROTOCOL_MODBUS = "modbus"
 PROTOCOL_PI18 = "pi18"
 PROTOCOL_AGENT = "agent"
+
+# Legacy combined protocol identifiers. Older config entries stored both the
+# inverter protocol and physical transport in CONF_PROTOCOL.
+PROTOCOL_TCP_ELFIN = "tcp_elfin"
 PROTOCOL_SERIAL = "serial"
 PROTOCOL_EYBOND = "eybond"
 
 PROTOCOLS = [
-    PROTOCOL_TCP_ELFIN,
+    PROTOCOL_VOLTRONIC,
     PROTOCOL_PI18,
     PROTOCOL_MODBUS,
     PROTOCOL_AGENT,
-    PROTOCOL_SERIAL,
-    PROTOCOL_EYBOND,
 ]
+
+# Supported transport identifiers
+TRANSPORT_TCP_ELFIN = "tcp_elfin"
+TRANSPORT_TCP = "tcp"
+TRANSPORT_SERIAL = "serial"
+TRANSPORT_EYBOND = "eybond"
+TRANSPORT_AGENT_HTTP = "agent_http"
+
+TRANSPORTS_BY_PROTOCOL = {
+    PROTOCOL_VOLTRONIC: [
+        TRANSPORT_TCP_ELFIN,
+        TRANSPORT_SERIAL,
+        TRANSPORT_EYBOND,
+    ],
+    PROTOCOL_PI18: [
+        TRANSPORT_TCP,
+        TRANSPORT_SERIAL,
+    ],
+    PROTOCOL_MODBUS: [
+        TRANSPORT_TCP,
+    ],
+    PROTOCOL_AGENT: [
+        TRANSPORT_AGENT_HTTP,
+    ],
+}
+
+DEFAULT_TRANSPORT_BY_PROTOCOL = {
+    protocol: transports[0]
+    for protocol, transports in TRANSPORTS_BY_PROTOCOL.items()
+    if transports
+}
+
+LEGACY_PROTOCOL_TRANSPORT = {
+    PROTOCOL_TCP_ELFIN: (PROTOCOL_VOLTRONIC, TRANSPORT_TCP_ELFIN),
+    PROTOCOL_SERIAL: (PROTOCOL_VOLTRONIC, TRANSPORT_SERIAL),
+    PROTOCOL_EYBOND: (PROTOCOL_VOLTRONIC, TRANSPORT_EYBOND),
+}
 
 # Defaults
 DEFAULT_TCP_PORT = 8899

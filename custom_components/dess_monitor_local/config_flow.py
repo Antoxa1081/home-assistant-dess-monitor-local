@@ -24,6 +24,7 @@ from .const import (
     CONF_NAME,
     CONF_DEVICE,
     CONF_PROTOCOL,
+    CONF_TRANSPORT,
     CONF_HOST,
     CONF_PORT,
     CONF_SERIAL_DEVICE,
@@ -33,13 +34,19 @@ from .const import (
     CONF_EYBOND_ANNOUNCE_IP,
     CONF_UPDATE_INTERVAL,
     CONF_STRICT_CRC,
-    PROTOCOL_TCP_ELFIN,
+    PROTOCOL_VOLTRONIC,
     PROTOCOL_MODBUS,
     PROTOCOL_PI18,
     PROTOCOL_AGENT,
-    PROTOCOL_SERIAL,
-    PROTOCOL_EYBOND,
     PROTOCOLS,
+    TRANSPORT_TCP_ELFIN,
+    TRANSPORT_TCP,
+    TRANSPORT_SERIAL,
+    TRANSPORT_EYBOND,
+    TRANSPORT_AGENT_HTTP,
+    TRANSPORTS_BY_PROTOCOL,
+    DEFAULT_TRANSPORT_BY_PROTOCOL,
+    LEGACY_PROTOCOL_TRANSPORT,
     DEFAULT_TCP_PORT,
     DEFAULT_AGENT_PORT,
     DEFAULT_EYBOND_BIND_HOST,
@@ -56,12 +63,7 @@ from .const import (
 # Protocols where the request/response framing carries a CRC and the
 # strict-CRC option is meaningful. Modbus has its own integrated check
 # already; agent receives pre-decoded JSON.
-_CRC_CAPABLE_PROTOCOLS = (
-    PROTOCOL_TCP_ELFIN,
-    PROTOCOL_SERIAL,
-    PROTOCOL_PI18,
-    PROTOCOL_EYBOND,
-)
+_CRC_CAPABLE_PROTOCOLS = (PROTOCOL_VOLTRONIC, PROTOCOL_PI18)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,8 +73,31 @@ async def _list_serial_ports() -> list[str]:
     return [port.device for port in ports]
 
 
+def _default_transport(protocol: str) -> str:
+    return DEFAULT_TRANSPORT_BY_PROTOCOL.get(protocol, TRANSPORT_TCP_ELFIN)
+
+
+def _normalize_protocol_transport(
+    protocol: str | None, transport: str | None = None
+) -> tuple[str, str]:
+    """Return logical protocol + compatible transport."""
+    if protocol in LEGACY_PROTOCOL_TRANSPORT:
+        protocol, legacy_transport = LEGACY_PROTOCOL_TRANSPORT[protocol]
+        if transport is None:
+            transport = legacy_transport
+
+    if protocol not in PROTOCOLS:
+        protocol = PROTOCOL_VOLTRONIC
+
+    supported = TRANSPORTS_BY_PROTOCOL.get(protocol, ())
+    if transport not in supported:
+        transport = _default_transport(protocol)
+    return protocol, transport
+
+
 def _build_device_uri(
     protocol: str,
+    transport: str,
     host: str,
     port: int,
     serial_device: str,
@@ -82,17 +107,24 @@ def _build_device_uri(
     eybond_announce_ip: str = DEFAULT_EYBOND_ANNOUNCE_IP,
 ) -> str:
     """Compose the storage `device` string from form fields."""
-    if protocol == PROTOCOL_SERIAL:
-        return serial_device
-    if protocol == PROTOCOL_TCP_ELFIN:
-        return f"tcp://{host}:{port}"
+    protocol, transport = _normalize_protocol_transport(protocol, transport)
+
+    if protocol == PROTOCOL_AGENT:
+        return f"agent://{host}:{port}/{agent_device_id}"
     if protocol == PROTOCOL_MODBUS:
         return f"modbus://{host}:{port}"
     if protocol == PROTOCOL_PI18:
+        if transport == TRANSPORT_SERIAL:
+            return f"pi18-serial://{serial_device}"
         return f"pi18://{host}:{port}"
-    if protocol == PROTOCOL_AGENT:
-        return f"agent://{host}:{port}/{agent_device_id}"
-    if protocol == PROTOCOL_EYBOND:
+    if protocol != PROTOCOL_VOLTRONIC:
+        return ""
+
+    if transport == TRANSPORT_SERIAL:
+        return serial_device
+    if transport == TRANSPORT_TCP_ELFIN:
+        return f"tcp://{host}:{port}"
+    if transport == TRANSPORT_EYBOND:
         # host = bind interface (usually 0.0.0.0); port = listen port.
         # devaddr selects the RS485 slave; broadcast is the UDP target.
         # announce_ip is what we tell the dongle to connect back to —
@@ -111,11 +143,10 @@ def _build_device_uri(
 
 
 def _parse_device_uri(device: str) -> dict[str, Any]:
-    """Best-effort recovery of (protocol, host, port, serial_device, agent_id)
-    from a stored device string. Used to pre-fill the options form for
-    entries created by older versions of this integration."""
+    """Best-effort recovery of connection fields from a stored device string."""
     blank = {
-        CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+        CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+        CONF_TRANSPORT: TRANSPORT_TCP_ELFIN,
         CONF_HOST: "",
         CONF_PORT: DEFAULT_TCP_PORT,
         CONF_SERIAL_DEVICE: "",
@@ -131,6 +162,7 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         parsed = urlparse(device)
         return {
             CONF_PROTOCOL: PROTOCOL_AGENT,
+            CONF_TRANSPORT: TRANSPORT_AGENT_HTTP,
             CONF_HOST: parsed.hostname or "",
             CONF_PORT: parsed.port or DEFAULT_AGENT_PORT,
             CONF_SERIAL_DEVICE: "",
@@ -140,6 +172,7 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         parsed = urlparse(device)
         return {
             CONF_PROTOCOL: PROTOCOL_MODBUS,
+            CONF_TRANSPORT: TRANSPORT_TCP,
             CONF_HOST: parsed.hostname or "",
             CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
             CONF_SERIAL_DEVICE: "",
@@ -149,15 +182,27 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         parsed = urlparse(device)
         return {
             CONF_PROTOCOL: PROTOCOL_PI18,
+            CONF_TRANSPORT: TRANSPORT_TCP,
             CONF_HOST: parsed.hostname or "",
             CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
             CONF_SERIAL_DEVICE: "",
             CONF_AGENT_DEVICE_ID: "",
         }
+    if device.startswith("pi18-serial://"):
+        _, serial_device = device.split("pi18-serial://", 1)
+        return {
+            CONF_PROTOCOL: PROTOCOL_PI18,
+            CONF_TRANSPORT: TRANSPORT_SERIAL,
+            CONF_HOST: "",
+            CONF_PORT: DEFAULT_TCP_PORT,
+            CONF_SERIAL_DEVICE: serial_device,
+            CONF_AGENT_DEVICE_ID: "",
+        }
     if device.startswith("tcp://"):
         parsed = urlparse(device)
         return {
-            CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+            CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+            CONF_TRANSPORT: TRANSPORT_TCP_ELFIN,
             CONF_HOST: parsed.hostname or "",
             CONF_PORT: parsed.port or DEFAULT_TCP_PORT,
             CONF_SERIAL_DEVICE: "",
@@ -174,7 +219,8 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         broadcast = (query.get("broadcast") or [DEFAULT_EYBOND_BROADCAST])[0]
         announce_ip = (query.get("announce") or [DEFAULT_EYBOND_ANNOUNCE_IP])[0]
         return {
-            CONF_PROTOCOL: PROTOCOL_EYBOND,
+            CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+            CONF_TRANSPORT: TRANSPORT_EYBOND,
             CONF_HOST: parsed.hostname or DEFAULT_EYBOND_BIND_HOST,
             CONF_PORT: parsed.port or DEFAULT_EYBOND_BIND_PORT,
             CONF_SERIAL_DEVICE: "",
@@ -191,14 +237,16 @@ def _parse_device_uri(device: str) -> dict[str, Any]:
         except ValueError:
             return blank
         return {
-            CONF_PROTOCOL: PROTOCOL_TCP_ELFIN,
+            CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+            CONF_TRANSPORT: TRANSPORT_TCP_ELFIN,
             CONF_HOST: host_part,
             CONF_PORT: port,
             CONF_SERIAL_DEVICE: "",
             CONF_AGENT_DEVICE_ID: "",
         }
     return {
-        CONF_PROTOCOL: PROTOCOL_SERIAL,
+        CONF_PROTOCOL: PROTOCOL_VOLTRONIC,
+        CONF_TRANSPORT: TRANSPORT_SERIAL,
         CONF_HOST: "",
         CONF_PORT: DEFAULT_TCP_PORT,
         CONF_SERIAL_DEVICE: device,
@@ -219,16 +267,13 @@ def _update_interval_field() -> Any:
 
 
 async def _build_connection_schema(
-    protocol: str, defaults: dict[str, Any]
+    protocol: str, transport: str, defaults: dict[str, Any]
 ) -> vol.Schema:
-    """Per-protocol schema for the connection step.
-
-    Each protocol shows only the fields it actually needs, plus the shared
-    update_interval at the bottom — keeps the form short and unambiguous.
-    """
+    """Connection fields for the selected protocol and transport."""
+    protocol, transport = _normalize_protocol_transport(protocol, transport)
     schema: dict = {}
 
-    if protocol == PROTOCOL_SERIAL:
+    if transport == TRANSPORT_SERIAL:
         ports = await _list_serial_ports()
         default_serial = defaults.get(CONF_SERIAL_DEVICE) or ""
         # Make sure a previously-saved port stays selectable even when the
@@ -248,14 +293,14 @@ async def _build_connection_schema(
             )
         )
     else:
-        if protocol == PROTOCOL_AGENT:
+        if transport == TRANSPORT_AGENT_HTTP:
             default_port = DEFAULT_AGENT_PORT
-        elif protocol == PROTOCOL_EYBOND:
+        elif transport == TRANSPORT_EYBOND:
             default_port = DEFAULT_EYBOND_BIND_PORT
         else:
             default_port = DEFAULT_TCP_PORT
 
-        if protocol == PROTOCOL_EYBOND:
+        if transport == TRANSPORT_EYBOND:
             host_default = defaults.get(CONF_HOST) or DEFAULT_EYBOND_BIND_HOST
         else:
             host_default = defaults.get(CONF_HOST) or vol.UNDEFINED
@@ -276,7 +321,7 @@ async def _build_connection_schema(
                     default=defaults.get(CONF_AGENT_DEVICE_ID) or vol.UNDEFINED,
                 )
             ] = cv.string
-        if protocol == PROTOCOL_EYBOND:
+        if transport == TRANSPORT_EYBOND:
             schema[
                 vol.Required(
                     CONF_EYBOND_DEVADDR,
@@ -324,25 +369,17 @@ async def _build_connection_schema(
 
 
 def _validate_connection(
-    protocol: str, user_input: dict[str, Any]
+    protocol: str, transport: str, user_input: dict[str, Any]
 ) -> dict[str, str]:
+    protocol, transport = _normalize_protocol_transport(protocol, transport)
     errors: dict[str, str] = {}
     host = (user_input.get(CONF_HOST) or "").strip()
     serial_device = (user_input.get(CONF_SERIAL_DEVICE) or "").strip()
     agent_device_id = (user_input.get(CONF_AGENT_DEVICE_ID) or "").strip()
 
-    if protocol == PROTOCOL_SERIAL and not serial_device:
+    if transport == TRANSPORT_SERIAL and not serial_device:
         errors[CONF_SERIAL_DEVICE] = "serial_required"
-    if (
-        protocol in (
-            PROTOCOL_TCP_ELFIN,
-            PROTOCOL_MODBUS,
-            PROTOCOL_PI18,
-            PROTOCOL_AGENT,
-            PROTOCOL_EYBOND,
-        )
-        and not host
-    ):
+    if transport != TRANSPORT_SERIAL and not host:
         errors[CONF_HOST] = "host_required"
     if protocol == PROTOCOL_AGENT and not agent_device_id:
         errors[CONF_AGENT_DEVICE_ID] = "agent_device_id_required"
@@ -350,6 +387,7 @@ def _validate_connection(
 
 
 def _protocol_schema(default_protocol: str) -> vol.Schema:
+    default_protocol, _ = _normalize_protocol_transport(default_protocol)
     return vol.Schema(
         {
             vol.Required(CONF_PROTOCOL, default=default_protocol): SelectSelector(
@@ -365,13 +403,34 @@ def _protocol_schema(default_protocol: str) -> vol.Schema:
     )
 
 
+def _transport_schema(protocol: str, default_transport: str) -> vol.Schema:
+    protocol, default_transport = _normalize_protocol_transport(
+        protocol, default_transport
+    )
+    transports = TRANSPORTS_BY_PROTOCOL.get(protocol, ())
+    return vol.Schema(
+        {
+            vol.Required(CONF_TRANSPORT, default=default_transport): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(value=t, label=t) for t in transports
+                    ],
+                    mode=SelectSelectorMode.LIST,
+                    translation_key=CONF_TRANSPORT,
+                )
+            )
+        }
+    )
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_PUSH
 
     def __init__(self):
         self._name: str | None = None
-        self._protocol: str = PROTOCOL_TCP_ELFIN
+        self._protocol: str = PROTOCOL_VOLTRONIC
+        self._transport: str = TRANSPORT_TCP_ELFIN
 
     async def async_step_user(self, user_input=None):
         """Step 1: hub name."""
@@ -390,23 +449,44 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_protocol(self, user_input=None):
-        """Step 2: pick the transport protocol."""
+        """Step 2: pick the inverter protocol."""
         if user_input is not None:
-            self._protocol = user_input[CONF_PROTOCOL]
-            return await self.async_step_connection()
+            self._protocol, self._transport = _normalize_protocol_transport(
+                user_input[CONF_PROTOCOL], self._transport
+            )
+            return await self.async_step_transport()
 
         return self.async_show_form(
             step_id="protocol",
             data_schema=_protocol_schema(self._protocol),
         )
 
+    async def async_step_transport(self, user_input=None):
+        """Step 3: pick the physical transport."""
+        if user_input is not None:
+            self._protocol, self._transport = _normalize_protocol_transport(
+                self._protocol, user_input[CONF_TRANSPORT]
+            )
+            return await self.async_step_connection()
+
+        self._protocol, self._transport = _normalize_protocol_transport(
+            self._protocol, self._transport
+        )
+        return self.async_show_form(
+            step_id="transport",
+            data_schema=_transport_schema(self._protocol, self._transport),
+            description_placeholders={"protocol": self._protocol},
+        )
+
     async def async_step_connection(self, user_input=None):
-        """Step 3: protocol-specific connection details + update interval."""
-        protocol = self._protocol
+        """Step 4: connection details + update interval."""
+        protocol, transport = _normalize_protocol_transport(
+            self._protocol, self._transport
+        )
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            errors = _validate_connection(protocol, user_input)
+            errors = _validate_connection(protocol, transport, user_input)
             if not errors:
                 host = (user_input.get(CONF_HOST) or "").strip()
                 port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
@@ -430,7 +510,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
                 device_value = _build_device_uri(
-                    protocol, host, port, serial_device, agent_device_id,
+                    protocol, transport, host, port, serial_device, agent_device_id,
                     eybond_devaddr, eybond_broadcast, eybond_announce_ip,
                 )
 
@@ -439,6 +519,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data={CONF_NAME: self._name},
                     options={
                         CONF_PROTOCOL: protocol,
+                        CONF_TRANSPORT: transport,
                         CONF_DEVICE: device_value,
                         CONF_HOST: host,
                         CONF_PORT: port,
@@ -453,12 +534,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         defaults = dict(user_input or {})
-        schema = await _build_connection_schema(protocol, defaults)
+        schema = await _build_connection_schema(protocol, transport, defaults)
         return self.async_show_form(
             step_id="connection",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"protocol": protocol},
+            description_placeholders={"protocol": protocol, "transport": transport},
         )
 
     @staticmethod
@@ -473,7 +554,8 @@ class OptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry):
         self._config_entry = config_entry
         self._defaults: dict[str, Any] = {}
-        self._protocol: str = PROTOCOL_TCP_ELFIN
+        self._protocol: str = PROTOCOL_VOLTRONIC
+        self._transport: str = TRANSPORT_TCP_ELFIN
 
     def _load_defaults(self) -> None:
         opts = dict(self._config_entry.options)
@@ -481,6 +563,9 @@ class OptionsFlow(config_entries.OptionsFlow):
         # entry predates the new schema.
         parsed = _parse_device_uri(opts.get(CONF_DEVICE, "") or "")
         self._defaults = {
+            CONF_TRANSPORT: opts.get(
+                CONF_TRANSPORT, parsed.get(CONF_TRANSPORT, TRANSPORT_TCP_ELFIN)
+            ),
             CONF_HOST: opts.get(CONF_HOST, parsed[CONF_HOST]),
             CONF_PORT: opts.get(CONF_PORT, parsed[CONF_PORT]),
             CONF_SERIAL_DEVICE: opts.get(
@@ -506,7 +591,10 @@ class OptionsFlow(config_entries.OptionsFlow):
             ),
             CONF_STRICT_CRC: opts.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC),
         }
-        self._protocol = opts.get(CONF_PROTOCOL, parsed[CONF_PROTOCOL])
+        self._protocol, self._transport = _normalize_protocol_transport(
+            opts.get(CONF_PROTOCOL, parsed[CONF_PROTOCOL]),
+            opts.get(CONF_TRANSPORT, parsed.get(CONF_TRANSPORT)),
+        )
 
     async def async_step_init(self, user_input=None):
         self._load_defaults()
@@ -514,20 +602,40 @@ class OptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_protocol(self, user_input=None):
         if user_input is not None:
-            self._protocol = user_input[CONF_PROTOCOL]
-            return await self.async_step_connection()
+            self._protocol, self._transport = _normalize_protocol_transport(
+                user_input[CONF_PROTOCOL], self._transport
+            )
+            return await self.async_step_transport()
 
         return self.async_show_form(
             step_id="protocol",
             data_schema=_protocol_schema(self._protocol),
         )
 
+    async def async_step_transport(self, user_input=None):
+        if user_input is not None:
+            self._protocol, self._transport = _normalize_protocol_transport(
+                self._protocol, user_input[CONF_TRANSPORT]
+            )
+            return await self.async_step_connection()
+
+        self._protocol, self._transport = _normalize_protocol_transport(
+            self._protocol, self._transport
+        )
+        return self.async_show_form(
+            step_id="transport",
+            data_schema=_transport_schema(self._protocol, self._transport),
+            description_placeholders={"protocol": self._protocol},
+        )
+
     async def async_step_connection(self, user_input=None):
-        protocol = self._protocol
+        protocol, transport = _normalize_protocol_transport(
+            self._protocol, self._transport
+        )
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            errors = _validate_connection(protocol, user_input)
+            errors = _validate_connection(protocol, transport, user_input)
             if not errors:
                 host = (user_input.get(CONF_HOST) or "").strip()
                 port = int(user_input.get(CONF_PORT) or DEFAULT_TCP_PORT)
@@ -551,7 +659,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                 )
 
                 device_value = _build_device_uri(
-                    protocol, host, port, serial_device, agent_device_id,
+                    protocol, transport, host, port, serial_device, agent_device_id,
                     eybond_devaddr, eybond_broadcast, eybond_announce_ip,
                 )
 
@@ -559,6 +667,7 @@ class OptionsFlow(config_entries.OptionsFlow):
                     title="",
                     data={
                         CONF_PROTOCOL: protocol,
+                        CONF_TRANSPORT: transport,
                         CONF_DEVICE: device_value,
                         CONF_HOST: host,
                         CONF_PORT: port,
@@ -573,10 +682,10 @@ class OptionsFlow(config_entries.OptionsFlow):
                 )
 
         defaults = {**self._defaults, **(user_input or {})}
-        schema = await _build_connection_schema(protocol, defaults)
+        schema = await _build_connection_schema(protocol, transport, defaults)
         return self.async_show_form(
             step_id="connection",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"protocol": protocol},
+            description_placeholders={"protocol": protocol, "transport": transport},
         )
