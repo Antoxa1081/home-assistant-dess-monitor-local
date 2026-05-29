@@ -2,7 +2,9 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    # TEMP: ci/** re-enabled to iterate on tests on the branch. Drop to
+    # just [main] before merging.
+    branches: [main, "ci/**"]
   pull_request:
   # Manual "Run workflow" button in the Actions tab — lets us test CI on a
   # feature branch without pushing to main or opening a PR.
@@ -69,3 +71,4 @@ jobs:
         run: >
           python -m pytest -v -o addopts="-ra" -o asyncio_mode=auto
           tests/test_entities.py tests/test_setup_hass.py
+          tests/test_adapters.py tests/test_config_flow.py
