@@ -6,7 +6,6 @@ bit map.
 """
 from custom_components.dess_monitor_local.api.decoders import voltronic
 
-
 # A real Anern 4200 QPIGS payload (from issue #5 diagnostics), without
 # the leading "(" or trailing CRC — i.e. what decode_qpigs receives.
 _QPIGS = (
@@ -26,6 +25,18 @@ class TestDecodeQpigs:
         assert d["battery_discharge_current"] == "00022"
         assert d["device_status_bits_b7_b0"] == "00010110"
         assert d["pv_charging_power"] == "01697"
+
+    def test_status_bits_crc_bleed_sanitized(self):
+        # Short frame where the CRC byte 's' bled into the last token.
+        # decode_qpigs must store clean binary digits (TECH_DEBT fix).
+        short = (
+            "239.3 50.0 230.6 49.9 2144 2136 053 400 26.70 000 062 0043 "
+            "12.0 140.4 00.00 00022 00010110 00 00 01697 110s"
+        )
+        d = voltronic.decode_qpigs(short)
+        assert d["device_status_bits_b10_b8"] == "110"
+        # Must be int-parseable now (the bug was int('110s', 2) crashing).
+        assert int(d["device_status_bits_b10_b8"], 2) == 6
 
     def test_short_frame_truncates_gracefully(self):
         # zip() stops at the shorter sequence — missing trailing fields

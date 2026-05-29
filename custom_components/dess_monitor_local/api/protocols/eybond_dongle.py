@@ -35,12 +35,12 @@ import socket
 import struct
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
+from ...const import PROTOCOL_PI18
 from ..crc import build_pi30_frame
 from ..decoders.pi18 import build_request_frame
-from ...const import PROTOCOL_PI18
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def _decode_header(data: bytes) -> _EyHeader:
 
 def _build_heartbeat(tid: int, interval: int) -> bytes:
     """FC=1 server→dongle heartbeat. Payload: UTC date + interval(2)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = bytes([
         (now.year - 2000) & 0xFF, now.month, now.day,
         now.hour, now.minute, now.second,
@@ -575,7 +575,7 @@ class EybondManager:
             )
             try:
                 await asyncio.wait_for(self._session_ready.wait(), timeout=wait)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.warning(
                     "EyBond: no dongle within %.1fs, dropping %s devaddr=%d",
                     wait, context or "frame", devaddr,
@@ -613,7 +613,7 @@ class EybondManager:
                 return None
             try:
                 raw = await asyncio.wait_for(fut, timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 sess.pending.pop(tid, None)
                 _LOGGER.warning(
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",

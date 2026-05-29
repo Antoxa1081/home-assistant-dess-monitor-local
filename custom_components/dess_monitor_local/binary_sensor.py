@@ -24,15 +24,14 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import HubConfigEntry
 from custom_components.dess_monitor_local.api.commands.direct_commands import (
-    parse_device_status_bits_b10_b8,
     parse_device_status_bits_b7_b0,
+    parse_device_status_bits_b10_b8,
 )
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import (
     DirectCoordinator,
 )
 from custom_components.dess_monitor_local.hub import InverterDevice
-
 
 # (status-key, sensor-suffix, human name, device_class). The parser
 # normalises bits to True/False, so we just look them up by key.

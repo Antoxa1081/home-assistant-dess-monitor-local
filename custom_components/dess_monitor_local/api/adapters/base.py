@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+
 from ..decoders.enums import (
     BatteryTypeSetting,
     ChargeSourcePrioritySetting,
     OutputSourcePrioritySetting,
 )
+
 
 class BaseAdapter(ABC):
     """Abstract base class for all communication adapters."""

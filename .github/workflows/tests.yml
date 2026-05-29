@@ -4,8 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual "Run workflow" button in the Actions tab — lets us test CI on a
+  # feature branch without pushing to main or opening a PR.
+  workflow_dispatch:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - name: Ruff lint
+        run: ruff check custom_components/dess_monitor_local tests
+
   pytest:
     runs-on: ubuntu-latest
     strategy:
@@ -20,13 +34,39 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install pytest
-        # The pure-logic test suite needs no Home Assistant — tests/conftest.py
+      - name: Install test deps
+        # The pure-logic suite needs no Home Assistant — tests/conftest.py
         # stubs the package parents so the HA-free modules import standalone.
-        run: pip install pytest
+        run: pip install pytest pytest-cov
 
-      - name: Run tests
-        # -v: name every test in the log (easier PR review than dots).
-        # -o addopts: override the repo's pytest.ini "-q" for CI only.
-        # --durations: surface the 10 slowest tests.
-        run: python -m pytest -v -o addopts="-ra --durations=10"
+      - name: Run pure-logic tests with coverage
+        # -v names every test; -ra overrides the repo's "-q". Entity tests
+        # (test_entities.py) self-skip here via importorskip — no HA on this
+        # matrix. Coverage is reported, not gated.
+        run: >
+          python -m pytest -v -o addopts="-ra --durations=10"
+          --cov=custom_components/dess_monitor_local --cov-report=term-missing
+
+  hass:
+    # Installs Home Assistant (via pytest-homeassistant-custom-component,
+    # which pins a compatible HA) and runs the HA-dependent tests: the
+    # lightweight entity tests and the full config-entry lifecycle tests.
+    # This is what catches integration-load regressions (e.g. a missing
+    # enum re-export) and async setup/unload issues. POSIX-only — pytest-hacc
+    # imports fcntl, so it can't run on the Windows dev box.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install test deps (pulls a pinned Home Assistant)
+        run: pip install -r requirements-test.txt
+      - name: Run HA-dependent tests
+        # Only the HA tests here — the pure/async suite runs on the
+        # 3.12/3.13 matrix above, free of pytest-hacc's socket/loop guards.
+        # asyncio_mode=auto lets pytest-hacc drive the async `hass` fixture.
+        run: >
+          python -m pytest -v -o addopts="-ra" -o asyncio_mode=auto
+          tests/test_entities.py tests/test_setup_hass.py
+          tests/test_adapters.py tests/test_config_flow.py

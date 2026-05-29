@@ -13,7 +13,6 @@ could plausibly be real.
 """
 from __future__ import annotations
 
-
 # Battery: 24 V LFP can sag to ~22 V under load; 96 V series banks can
 # read into the 110+ V range during equalization. Keep a wide window so
 # we never reject a real high-SOC reading.

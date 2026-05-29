@@ -17,7 +17,9 @@ QPIRI / QMOD response, so sensors don't need to know which adapter
 sourced the data.
 """
 from __future__ import annotations
+
 import logging
+
 from .adapters.factory import get_adapter
 from .decoders.enums import (
     BatteryTypeSetting,

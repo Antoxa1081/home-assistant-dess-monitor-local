@@ -1,0 +1,11 @@
+# Test dependencies.
+#
+# The pure-logic suite needs only pytest (+ pytest-cov). The full
+# hass-fixture lifecycle tests (tests/test_setup_hass.py) additionally
+# need pytest-homeassistant-custom-component, which pulls a pinned Home
+# Assistant and is POSIX-only (imports fcntl) — it runs in the Linux CI
+# "hass" job, not on Windows dev machines.
+pytest
+pytest-cov
+pytest-homeassistant-custom-component
+pyserial-asyncio-fast

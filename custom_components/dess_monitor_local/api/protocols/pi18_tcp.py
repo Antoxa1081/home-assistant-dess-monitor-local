@@ -15,9 +15,9 @@ import logging
 
 import serial_asyncio_fast as serial_asyncio
 
+from ...frame_log import record as _record_frame
 from ..crc import validate_pi18_response
 from ..decoders.pi18 import build_request_frame, decode_pi18_response
-from ...frame_log import record as _record_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ async def query_pi18(
     try:
         try:
             raw = await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raw = None
         if not raw:
             return {}

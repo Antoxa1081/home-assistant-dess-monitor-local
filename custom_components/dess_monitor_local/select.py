@@ -7,12 +7,16 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import HubConfigEntry
-from custom_components.dess_monitor_local.api.commands.direct_commands import set_output_source_priority, \
-    OutputSourcePrioritySetting, ChargeSourcePrioritySetting, set_charge_source_priority, set_max_utility_charge_current
+from custom_components.dess_monitor_local.api.commands.direct_commands import (
+    ChargeSourcePrioritySetting,
+    OutputSourcePrioritySetting,
+    set_charge_source_priority,
+    set_max_utility_charge_current,
+    set_output_source_priority,
+)
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 from custom_components.dess_monitor_local.hub import InverterDevice
-
 
 BATTERY_MODE_LI_VOLTAGE = "Lithium (Voltage)"
 BATTERY_MODE_LI_BMS = "Lithium (BMS)"
@@ -33,7 +37,6 @@ async def async_setup_entry(
     """Add sensors for passed config_entry in HA."""
     hub = config_entry.runtime_data
     coordinator = hub.direct_coordinator
-    coordinator_data = hub.direct_coordinator.data
 
     new_devices = []
     for item in hub.items:

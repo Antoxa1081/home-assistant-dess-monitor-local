@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 import asyncio
 import logging
+
 import serial_asyncio_fast as serial_asyncio
 
-from .base import BaseAdapter
 from ..decoders.voltronic import decode_direct_response
 from ..protocols.elfin_tcp import ElfinTCPProtocol, parse_tcp_uri
 from ..protocols.serial_uart import SERIAL_BAUDRATE, SerialCommandProtocol
+from .base import BaseAdapter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +50,7 @@ class VoltronicAdapter(BaseAdapter):
         try:
             try:
                 result = await asyncio.wait_for(fut, timeout=self.timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result = None
 
             if result and isinstance(result, str):
@@ -68,7 +70,7 @@ class VoltronicAdapter(BaseAdapter):
             from ..protocols.elfin_tcp import send_voltronic_set_command
             host, port = parse_tcp_uri(self.uri)
             return await send_voltronic_set_command(host, port, command, self.timeout)
-        
+
         # Fallback to get_data for serial or others if not specialized
         resp = await self.get_data(command)
         # decode_direct_response already handles ACK/NAK for some commands but returns a dict.

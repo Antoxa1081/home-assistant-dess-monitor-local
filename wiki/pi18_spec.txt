@@ -1,0 +1,487 @@
+--- PAGE 1 ---
+Character Description Remark
+^ Start bit
+T Type P: PC Query command, S: Set command, D: Device Response
+nnn Data length Include CRC and ending character, except"^Tnnn"
+XXXXX Data If the data is reserved, they will be filled nothing, so you
+would see double "," connected.
+, Seperator Separate each data, please use "," to recognize the length of
+data. If double "," continuing, that means this data is reserved.
+<CRC> Two byte of CRC result, the first byte is high 8 bits, second byte is
+low 8 bits.
+Data Description Remark
+YYYY Year Y: 0~9
+MM Month M: 0~9
+DD Day D: 0~9
+HH Hour H: 0~9
+FF Minute F: 0~9
+SS Second S: 0~9
+Data Description Remark
+NNNNNNNN Generated energy N: 0~9, unit: KWh
+Data Description Remark
+yyyy Year y: 0~9
+NNNNNNNN Generated energy N: 0~9, unit: KWh
+Data Description Remark
+yyyy Year y: 0~9
+mm Month m: 0~9
+NNNNNNNN Generated energy N: 0~9, unit: KWh
+Data Description Remark
+yyyy Year y:  0~9
+mm Month m: 0~9
+dd Day d:  0~9
+NNNNNNNN Generated energy N: 0~9, unit: Wh
+Data Description Remark
+aaaaa Main CPU version
+bbbbb Slave 1 CPU version
+ccccc Slave 2 CPU version
+Data Description Remark
+AAAA AC input rating voltage A: 0~9, unit: 0.1V
+SEC Command Format
+^TnnnXXXX,XXXX,XXXX,,<CRC><cr>
+^P006VFW<CRC><cr>: Query CPU version
+Query commands
+^P005PI<CRC><cr>: Query protocol ID
+Response: ^D00518<CRC><cr>
+^P005ID<CRC><cr>: Query series number
+Response: ^D025LLXXXXXXXXXXXXXXXXXXXX<CRC><cr>
+X: 0~9, 20 unit X totally. LL: the available number of X.
+Example: ^D0251401234567890123456789<CRC><cr>, it meas ID is 01234567890123.
+^P004T<CRC><cr>: Query current time
+Response: ^D017YYYYMMDDHHFFSS<CRC><cr>
+For example:
+^D01720160214201314 means the time of 2016-02-14, 20: 13: 14
+Response: ^D011NNNNNNNN<CRC><cr>
+Response: ^D011NNNNNNNN<CRC><cr>
+^P009EYyyyy<CRC><cr>: Query generated energy of year
+                                    查询年发电量
+^P011EMyyyymm<cr>: Query generated energy of month
+                                          查询月发电量
+^P005ET<CRC><cr>: Query total generated energy
+                                    查询总发电量
+Response: ^D020aaaaa,bbbbb,ccccc<CRC><cr>
+Response: ^D011NNNNNNNN<CRC><cr>
+Response: ^D011NNNNNN<CRC><cr>
+^P013EDyyyymmdd<cr>: Query generated energy of day
+                                            查询天发电量
+^P007PIRI<CRC><cr>: Query rated information
+Response: ^D085AAAA,BBB,CCCC,DDD,EEE,FFFF,GGGG,HHH,III,JJJ,KKK,LLL,MMM,N,OO,PPP,Q,R,S,T,U,V,W,Z,a<CRC><cr>
+--- PAGE 2 ---
+BBB AC input rating current B: 0~9, unit: 0.1A
+CCCC AC output rating voltage C: 0~9, unit: 0.1V
+DDD AC output rating frequency D: 0~9, unit: 0.1Hz
+EEE AC output rating current E: 0~9, unit: 0.1A
+FFFF AC output rating  apparent  power F: 0~9, unit: VA
+GGGG AC output rating active power G: 0~9, unit: W
+HHH Battery rating voltage H: 0~9, unit: 0.1V
+III Battery re-charge voltage I: 0~9, unit: 0.1V
+JJJ Battery re-discharge voltage J: 0~9, unit: 0.1V
+KKK Battery under voltage K: 0~9, unit: 0.1V
+LLL Battery bulk voltage L: 0~9, unit: 0.1V
+MMM Battery float voltage M: 0~9, unit: 0.1V
+N Battery type N: 0: AGM, 1: Flooded, 2: User
+OO Max AC charging current O: 0~9, unit: A
+PPP Max charging current P: 0~9, unit: A
+Q Input voltage range 0: Appliance, 1: UPS
+R Output source priority 0: Solar-Utility-Battery, 1: Solar-Battery-Utility
+S Charger source priority 0: Solar first, 1: Solar and Utility, 2: Only solar
+T Parallel max num T: 0~9
+U Machine type 0: Off-grid Tie, 1: Grid-Tie
+V Topology 0: transformerless, 1: transformer
+W Output model setting
+0: Single module, 1: parallel output, 2: Phase 1 of three phase
+output,
+3: Phase 2 of three phase output, 4: Phase 3 of three phaseZ Solar power priority 0: Battery-Load-Utility, 1: Load-Battery-Utility
+a MPPT string a: 0~9
+Data Description Remark
+AAAA Grid voltage A: 0~9, unit: 0.1V
+BBB Grid frequency B: 0~9, unit: 0.1Hz
+CCCC AC output voltage C: 0~9, unit: 0.1V
+DDD AC output frequency D: 0~9, unit: 0.1Hz
+EEEE AC output apparent power E: 0~9, unit: VA
+FFFF AC output active power F: 0~9, unit: W
+GGG Output load percent G: 0~9, unit: %
+HHH Battery voltage H: 0~9, unit: 0.1V
+III Battery voltage from SCC I: 0~9, unit: 0.1V
+JJJ Battery voltage from SCC2 J: 0~9, unit: 0.1V
+KKK Battery discharge current K: 0~9, unit: A
+LLL Battery charging current L: 0~9, unit: A
+MMM Battery capacity M: 0~9, unit: %
+NNN Inverter heat sink temperature N: 0~9, unit: oC
+OOO MPPT1 charger temperature O: 0~9, unit: oC
+PPP MPPT2 charger temperature P: 0~9, unit: oC
+QQQQ PV1 Input power Q: 0~9, unit: W
+RRRR PV2 Input power R: 0~9, unit: W
+SSSS PV1 Input voltage S: 0~9, unit: 0.1V
+TTTT PV2 Input voltage S: 0~9, unit: 0.1V
+U Setting value configuration state 0: Nothing changed, 1: Something changed
+V MPPT1 charger status 0: abnormal, 1: normal but not charged, 2: charging
+W MPPT2 charger status 0: abnormal, 1: normal but not charged, 2: charging
+X Load connection 0: disconnect, 1: connect
+Y Battery power direction 0: donothing, 1: charge, 2: discharge
+Z DC/AC power direction 0: donothing, 1: AC-DC, 2: DC-AC
+a Line power direction 0: donothing, 1: input, 2: output
+b Local parallel ID a: 0~(parallel number - 1)
+Data Description Remark
+0 Power on mode
+1 Standby mode
+2 Bypass mode
+3 Battery mode
+4 Fault mode
+5 Hybrid mode(Line mode, Grid mode)
+^D034AA,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q<CRC><cr>
+XX
+^P005FWS<CRC><cr>: Query fault and warning status
+Response: ^D106AAAA,BBB,CCCC,DDD,EEEE,FFFF,GGG,HHH,III,JJJ,KKK,LLL,
+MMM,NNN,OOO,PPP,QQQQ,RRRR,SSSS,TTTT,U,V,W,X,Y,Z,a,b<CRC><cr>
+^P006MOD<CRC><cr>: Query working mode
+Response: ^D005XX<CRC><cr>
+^P005GS<CRC><cr>: Query general status
+--- PAGE 3 ---
+Data Description Remark
+AA Fault code
+B Line fail
+C Output circuit short
+D Inverter over temperature
+E Fan lock
+F Battery voltage high
+G Battery low
+H Battery under
+I Over load
+J Eeprom fail
+K Power limit
+L PV1 voltage high
+M PV2 voltage high
+N MPPT1 overload warning
+O MPPT2 overload warning
+P Battery too low to charge for SCC1
+Q Battery too low to charge for SCC2
+1 Fan is locked
+2 Over temperature
+3 Battery voltage is too high
+4 Battery voltage is too low
+5 Output short circuited or Over temperature
+6 Output voltage is too high
+7 Over load time out
+8 Bus voltage is too high
+9 Bus soft start failed
+11 Main relay failed
+51 Over current inverter
+52 Bus soft start failed
+53 Inverter soft start failed
+54 Self-test failed
+55 Over DC voltage on output of inverter
+56 Battery connection is open
+57 Current sensor failed
+58 Output voltage is too low
+60 Inverter negative power
+71 Parallel version different
+72 Output circuit failed
+80 CAN communication failed
+81 Parallel host line lost
+82 Parallel synchronized signal lost
+83 Parallel battery voltage detect different
+84 Parallel Line voltage or frequency detect different
+85 Parallel Line input current unbalanced
+86 Parallel output setting different
+Data Description Remark
+A Enable/disable silence buzzer or open buzzer A: 0/1, 0: disable, 1: enable
+B Enable/Disable overload bypass function B: 0/1, 0: disable, 1: enable
+C Enable/Disable LCD display escape to default page after 1min
+timeout C: 0/1, 0: disable, 1: enable
+D Enable/Disable overload restart D: 0/1, 0: disable, 1: enable
+E Enable/Disable over temperature restart E: 0/1, 0: disable, 1: enable
+F Enable/Disable backlight on F: 0/1, 0: disable, 1: enable
+G Enable/Disable alarm on when primary source interrupt G: 0/1, 0: disable, 1: enable
+H Enable/Disable fault code record H: 0/1, 0: disable, 1: enable
+I Reserved
+Data Description Remark
+AAAA AC output voltage A: 0~9, unit: 0.1V
+BBB AC output frequency B: 0~9, unit: 0.1Hz
+C AC input voltage range 0: Appliance, 1: UPS
+DDD Battery Under voltage D: 0~9, unit: 0.1V
+EEE Charging float voltage E: 0~9, unit: 0.1V
+FFF Charging bulk voltage F: 0~9, unit: 0.1V
+GGG Battery default re-charge voltage G: 0~9, unit: 0.1V
+HHH Battery re-discharge voltage H: 0~9, unit: 0.1V
+^P007FLAG<CRC><cr>: Query enable/disable flag status
+Response: ^D020A,B,C,D,E,F,G,H,I<CRC><cr>
+^P005DI<CRC><cr>: Query default value of changeable parameter
+Fault code list
+Response: ^D068AAAA,BBB,C,DDD,EEE,FFF,GGG,HHH,III,JJ,K,L,M,N,O,P,S,T,U,V,W,X,Y,Z<CRC><cr>
+--- PAGE 4 ---
+III Max charging current I: 0~9, unit: A
+JJ Max AC charging current J: 0~9, unit: A
+K Battery type N: 0: AGM, 1: Flooded, 2: User
+L Output source priority 0: Solar-Utility-Battery, 1: Solar-Battery-Utility
+M Charger source priority 0: Solar first, 1: Solar and Utility, 2: Only solar
+N Solar power priority 0: Battery-Load-Utility, 1: Load-Battery-Utility
+O Machine type 0: Off-grid Tie, 1: Grid-Tie
+P Output model setting
+0: Single module, 1: parallel output, 2: Phase 1 of three phase
+output,
+3: Phase 2 of three phase output, 4: Phase 3 of three phaseS Enable/disable silence buzzer or open buzzer 0: disable, 1: enable
+T Enable/Disable overload restart 0: disable, 1: enable
+U Enable/Disable over temperature restart 0: disable, 1: enable
+V Enable/Disable LCD backlight on 0: disable, 1: enable
+W Enable/Disable alarm on when primary source interrupt 0: disable, 1: enable
+X Enable/Disable fault code record 0: disable, 1: enable
+Y Enable/Disable overload bypass 0: disable, 1: enable
+Z Enable/Disable LCD display escape to default page after 1min
+timeout 0: disable, 1: enable
+Data Description Remark
+AAA Max. charging current selectable value A: 0~9, unit: A
+BBB Max. charging current selectable value B: 0~9, unit: A
+CCC Max. charging current selectable value C: 0~9, unit: A
+DDD Max. charging current selectable value D: 0~9, unit: A
+EEE Max. charging current selectable value E: 0~9, unit: A
+FFF Max. charging current selectable value F: 0~9, unit: A
+GGG Max. charging current selectable value G: 0~9, unit: A
+Data Description Remark
+AAA Max. charging current selectable value A: 0~9, unit: A
+BBB Max. charging current selectable value B: 0~9, unit: A
+CCC Max. charging current selectable value C: 0~9, unit: A
+DDD Max. charging current selectable value D: 0~9, unit: A
+EEE Max. charging current selectable value E: 0~9, unit: A
+FFF Max. charging current selectable value F: 0~9, unit: A
+GGG Max. charging current selectable value G: 0~9, unit: A
+Data Description Remark
+n Parallel system ID n: 0~(Parallel number - 1)
+A Parallel ID connection status 0: Not existent, 1: existent
+BB Serial Number valid length B: 0~9
+CCCCCCCCC
+CCCCCCCCC
+CC
+Serial Number C: 0~9
+D Charging source priority 0: Solar first, 1: Solar and Utility, 2: Only solar
+EEE Max. charging current E: 0~9, unit: A
+FF Max. AC charging current F: 0~9, unit: A
+G Output model setting
+0: Single module, 1: parallel output, 2: Phase 1 of three phase
+output,
+3: Phase 2 of three phase output, 4: Phase 3 of three phase
+Data Description Remark
+n Parallel system ID n: 0~(Parallel number - 1)
+A Parallel ID connection status 0: Not existent, 1: existent
+B Work mode
+CC Fault code
+DDDD Grid voltage D: 0~9, unit: 0.1V
+EEE Grid frequency E: 0~9, unit: 0.1Hz
+FFFF AC output voltage F: 0~9, unit: 0.1V
+GGG AC output frequency G: 0~9, unit: 0.1Hz
+HHHH AC output apparent power H: 0~9, unit: VA
+IIII AC output active power I: 0~9, unit: W
+JJJJJ Total AC output apparent power J: 0~9, unit: VA
+KKKKK Total AC output active power K: 0~9, unit: W
+LLL Output load percent L: 0~9, unit: %
+Response: ^D030AAA,BBB,CCC,DDD,EEE,FFF,GGG<CRC><cr>
+^P010MUCHGCR<CRC><cr>: Query Max. AC charging current selectable value
+Response: ^D030AAA,BBB,CCC,DDD,EEE,FFF,GGG<CRC><cr>
+^P007PRIn<CRC><cr>: Query different rated information of parallel system
+Response: ^D039A,BB,CCCCCCCCCCCCCCCCCCCC,D,EEE,FF,G<CRC><cr>
+^P007PGSn<CRC><cr>: Query general status of parallel system
+Response: ^D113A,B,CC,DDDD,EEE,FFFF,GGG,HHHH,IIII,JJJJJ,KKKKK,LLL,
+MMM,NNN,OOO,PPP,QQQ,MMM,RRRR,SSSS,TTTT,UUUU,V,W,X,Y,Z,a,bbb<CRC><cr>
+^P009MCHGCR<CRC><cr>: Query Max. charging current selectable value
+--- PAGE 5 ---
+MMM Total output load percent M: 0~9, unit: %
+NNN Battery voltage N: 0~9, unit: 0.1V
+OOO Battery discharge current O: 0~9, unit: A
+PPP Battery charging current P: 0~9, unit: A
+QQQ Total battery charging current Q: 0~9, unit: A
+MMM Battery capacity M: 0~9, unit: %
+RRRR PV1 Input power R: 0~9, unit: W
+SSSS PV2 Input power S: 0~9, unit: W
+TTTT PV1 Input voltage T: 0~9, unit: 0.1V
+UUUU PV2 Input voltage U: 0~9, unit: 0.1V
+V MPPT1 charger status 0: abnormal, 1: normal but not charged, 2: charging
+W MPPT2 charger status 0: abnormal, 1: normal but not charged, 2: charging
+X Load connection 0: disconnect, 1: connect
+Y Battery power direction 0: donothing, 1: charge, 2: discharge
+Z DC/AC power direction 0: donothing, 1: AC-DC, 2: DC-AC
+a Line power direction 0: donothing, 1: input, 2: output
+bbb Max. Temperature b:0~9, unit: oC
+Data Description Remark
+AAAA Start time for enable AC charger working AAAA: HH:MM(hour : minute)
+BBBB Ending time for enable AC charger working BBBB: HH:MM(hour : minute)
+Data Description Remark
+AAAA Start time for enable AC supply the load AAAA: HH:MM(hour : minute)
+BBBB Ending time for enable AC supply the load BBBB: HH:MM(hour : minute)
+Data Description Remark
+n Enable/disable 0: disable, 1: enable
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m enable/disable E: enable, D: disable
+A Silence buzzer or open buzzer
+B Overload bypass function
+C LCD display escape to default page after 1min timeout
+D Overload restart
+E Over temperature restart
+F Backlight on
+G Alarm on when primary source interrupt
+H Fault code record
+I Machine type, enable: Grid-Tie, disable: Off-Grid Tie
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Parallel machine ID m: 0~Parallel number, if single model, it should be 0
+nnn Battery maximum charge current n: 0~9, unit: A, please check setable value by
+"^P009MCHGCR<CRC><cr>"
+^1 Accept command
+^0 Refuse command
+^S013MCHGCm,nnn<CRC><cr>: Set battery maximum charge current
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S005PF<CRC><cr>: Set changeable parameter restore to default value
+n
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Set commands
+^S007LONn<CRC><cr>: Set enable/disable machine supply power to the loads
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S006Pmn<CRC><cr>: Set enable/disable status
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^P005ACCT<CRC><cr>: Query AC charge time bucket
+查询允许AC带载时间段
+Response: ^D012AAAA,BBBB<CRC><cr>
+查询允许AC充电时间段
+Response: ^D012AAAA,BBBB<CRC><cr>
+^P005ACLT<cr>: Query AC supply load time bucket
+--- PAGE 6 ---
+Data Description Remark
+m Parallel machine ID m: 0~Parallel number, if single model, it should be 0
+nnn Battery maximum charge current n: 0~9, unit: A, please check setable value by
+"^P010MUCHGCR<CRC><cr>"
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+mmm Battery constant charge voltage(C.V.) mmm: 480~584, unit: 0.1V
+nnn Battery float charge voltage nnn: 480~584, unit: 0.1V
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+nnnn voltage unit: 0.1V, nnnn: 2020,2080, 2200, 2300, 2400
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Output source priority 0: Solar-Utility-Battery, 1: Solar-Battery-Utility
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+mmm Battery re-charged voltage when utility is available m: 0~9, unit: 0.1V
+Selectable
+value
+nnn Battery re-discharged voltage when utility is available n: 0~9, unit: 0.1V
+Selectable
+value
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Parallel machine ID m: 0~Parallel number, if single model, it should be 0
+n Charging source priority 0: Solar first, 1: Solar and Utility, 2: Only solar
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Solar power priority 0: Battery-Load-Utility, 1: Load-Battery-Utility
+^1 Accept command
+^0 Refuse command
+^S007PSPm<CRC><cr>: Set solar power priority
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S008Vnnnn<CRC><cr>: Set AC output rated voltage
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+12V unit: 00.0V/12V/12.3V/12.5V/12.8V/13V/13.3V/13.5V/13.8V/14V/14.3V/14.5
+24V unit: 00.0V/24V/24.5V/25V/25.5V/26V/26.5V/27V/27.5V/28V/28.5V/29V
+48V unit: 00.0V/48V/49V/50V/51V/52V/53V/54V/55V/56V/57V/58V
+12V unit: 11V/11.3V/11.5V/11.8V/12V/12.3V/12.5V/12.8V
+24V unit: 22V/22.5V/23V/23.5V/24V/24.5V/25V/25.5V
+48V unit: 44V/45V/46V/47V/48V/49V/50V/51V
+^S014BUCDmmm,nnn<cr>:  Battery re-charged and re-discharged voltage when utility is available
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S009PCPm,n<CRC><cr>: Set charging source priority
+^S015MCHGVmmm,nnn<CRC><cr>: Set battery maximum charge voltage
+^S007POPm<CRC><cr>: Set output souce priority
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S006F50<CRC><cr>: Set AC output frequency to be 50Hz
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S014MUCHGCm,nnn<CRC><cr>: Set battery maximum AC charge current
+^S006F60<CRC><cr>: Set AC output frequency to be 60Hz
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+--- PAGE 7 ---
+Data Description Remark
+m AC input voltage range 0: Appliance, 1: UPS
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Battery type N: 0: AGM, 1: Flooded, 2: User
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+m Parallel machine ID m: 0~Parallel number, if single model, it should be 0
+n Output model
+0: Single module, 1: parallel output, 2: Phase 1 of three phase
+output,
+3: Phase 2 of three phase output, 4: Phase 3 of three phase^1 Accept command
+^0 Refuse command
+Data Description Remark
+mmm battery cut-off voltage mmm:400~480, the unit is 0.1V
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+mm valid serial number length mm: 01~20
+n Serial number n: 0~9
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+yy Year Y: 0~9
+mm Month M: 0~9
+dd Day D: 0~9
+hh Hour H: 0~9
+ff Minute F: 0~9
+ss Second S: 0~9
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+aaaa Start time for enable AC charger working aaaa: HH:MM(hour : minute)
+bbbb Ending time for enable AC charger working bbbb: HH:MM(hour : minute)
+^1 Accept command
+^0 Refuse command
+Data Description Remark
+aaaa Start time for enable AC supply the load aaaa: HH:MM(hour : minute)
+bbbb Ending time for enable AC supply the load bbbb: HH:MM(hour : minute)
+^1 Accept command
+^0 Refuse command
+^S007PBTm<CRC><cr>: Set battery type
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S010POPMm,n<CRC><cr>: Set output model
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S010PSDVmmm<CRC><cr>: Set battery cut-off voltage
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S027IDmmnnnnnnnnnnnnnnnnnnnn<CRC><cr>: Set solar configuration
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S018DATyymmddhhffss<cr>: Set date time
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S006CLE<cr>: Clear the all the data of generated energy
+                                            清除所有发电量
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S014ACCTaaaa,bbbb<cr>: Set AC charge time bucket
+^S014ACLTaaaa,bbbb<cr>: Set AC supply load time bucket
+Response: ^1<CRC><cr> or ^0<CRC><cr>
+^S007PGRm<CRC><cr>: Set AC input voltage range
+--- PAGE 8 ---
+CRC calculation
+CRC source code.txt
