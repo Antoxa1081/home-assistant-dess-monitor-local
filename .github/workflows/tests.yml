@@ -2,9 +2,7 @@ name: tests
 
 on:
   push:
-    # TEMP: ci/** included so this feature branch triggers CI on push.
-    # Revert to just [main] before merging.
-    branches: [main, "ci/**"]
+    branches: [main]
   pull_request:
   # Manual "Run workflow" button in the Actions tab — lets us test CI on a
   # feature branch without pushing to main or opening a PR.
