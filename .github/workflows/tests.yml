@@ -67,4 +67,7 @@ jobs:
       - name: Run HA-dependent tests
         # Only the HA tests here — the pure/async suite runs on the
         # 3.12/3.13 matrix above, free of pytest-hacc's socket/loop guards.
-        run: python -m pytest -v -o addopts="-ra" tests/test_entities.py tests/test_setup_hass.py
+        # asyncio_mode=auto lets pytest-hacc drive the async `hass` fixture.
+        run: >
+          python -m pytest -v -o addopts="-ra" -o asyncio_mode=auto
+          tests/test_entities.py tests/test_setup_hass.py

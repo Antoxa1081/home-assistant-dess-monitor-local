@@ -69,6 +69,7 @@ def _entry() -> MockConfigEntry:
     )
 
 
+@pytest.mark.asyncio
 async def test_setup_creates_entities_and_unloads(hass, enable_custom_integrations):
     entry = _entry()
     entry.add_to_hass(hass)
@@ -94,6 +95,7 @@ async def test_setup_creates_entities_and_unloads(hass, enable_custom_integratio
     await hass.async_block_till_done()
 
 
+@pytest.mark.asyncio
 async def test_soc_unavailable_until_capacity_set(hass, enable_custom_integrations):
     """vSoC stays unavailable until a positive battery capacity is entered."""
     entry = _entry()
