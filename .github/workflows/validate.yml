@@ -1,0 +1,28 @@
+name: validate
+
+# Home Assistant custom-component correctness checks that pytest can't
+# cover: manifest.json structure / required keys (hassfest) and HACS
+# repository requirements (hacs.json, brands, structure).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Catch upstream HA/HACS rule changes even without a code push.
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
