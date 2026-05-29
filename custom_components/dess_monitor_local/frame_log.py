@@ -20,7 +20,7 @@ Implementation choices:
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _MAX_FRAMES_PER_COMMAND = 20
 _FRAMES: dict[str, deque[dict]] = {}
@@ -42,7 +42,7 @@ def record(command: str, raw_bytes: bytes, crc_valid: bool) -> None:
         buf = deque(maxlen=_MAX_FRAMES_PER_COMMAND)
         _FRAMES[command] = buf
     buf.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "byte_count": len(raw_bytes),
         "crc_valid": crc_valid,
         "raw_hex": raw_bytes.hex(" "),

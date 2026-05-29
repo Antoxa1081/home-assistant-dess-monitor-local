@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import logging
-from .base import BaseAdapter
+
 from ..protocols.pi18_tcp import query_pi18
+from .base import BaseAdapter
 
 _LOGGER = logging.getLogger(__name__)
 

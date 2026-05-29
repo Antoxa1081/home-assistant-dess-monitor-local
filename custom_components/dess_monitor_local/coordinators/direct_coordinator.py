@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import timedelta, datetime
+from datetime import datetime, timedelta
 
 import async_timeout
 from homeassistant.core import HomeAssistant
@@ -11,10 +11,14 @@ from homeassistant.helpers.update_coordinator import (
 from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
-    CONF_UPDATE_INTERVAL,
     CONF_STRICT_CRC,
-    DEFAULT_UPDATE_INTERVAL,
+    CONF_UPDATE_INTERVAL,
     DEFAULT_STRICT_CRC,
+    DEFAULT_UPDATE_INTERVAL,
+)
+from custom_components.dess_monitor_local.coordinators.failure_tracker import (
+    FailureOutcome,
+    FailureTracker,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,9 +53,8 @@ class DirectCoordinator(DataUpdateCoordinator):
             always_update=False
 
         )
-        # Per-(device, command) consecutive-failure counter. Reset on any
-        # successful read.
-        self._consecutive_failures: dict[str, dict[str, int]] = {}
+        # Per-(device, command) consecutive-failure counter + freeze policy.
+        self._failures = FailureTracker(self._MAX_CONSECUTIVE_FAILURES)
         # self.my_api = my_api
         # self._device: MyDevice | None = None
 
@@ -88,11 +91,8 @@ class DirectCoordinator(DataUpdateCoordinator):
         queue = self.hass.data["dess_monitor_local_queue"]
 
         async def fetch_with_retry(device: str, cmd: str, section: str) -> dict:
-            """Read a command with one fast retry, falling back to the last
-            known section if both attempts return empty. After
-            ``_MAX_CONSECUTIVE_FAILURES`` failures in a row the section goes
-            empty so HA flips the entities to unavailable."""
-            failures = self._consecutive_failures.setdefault(device, {})
+            """Read a command with one fast retry, then apply the pure
+            freeze/unavailable policy (see FailureTracker)."""
             for attempt in range(2):
                 try:
                     result = await queue.enqueue(
@@ -106,31 +106,25 @@ class DirectCoordinator(DataUpdateCoordinator):
                     )
                     result = None
                 if result:
-                    failures[cmd] = 0
+                    self._failures.on_success(device, cmd)
                     return result
                 if attempt == 0:
                     await asyncio.sleep(self._RETRY_DELAY_S)
 
-            failures[cmd] = failures.get(cmd, 0) + 1
-            if failures[cmd] < self._MAX_CONSECUTIVE_FAILURES:
-                last = (prev_data.get(device) or {}).get(section) or {}
-                if last:
-                    _LOGGER.debug(
-                        "%s/%s read failed (consecutive=%d/%d); freezing on last known data",
-                        device,
-                        cmd,
-                        failures[cmd],
-                        self._MAX_CONSECUTIVE_FAILURES,
-                    )
-                    return last
-            else:
+            count = self._failures.on_failure(device, cmd)
+            last_known = (prev_data.get(device) or {}).get(section) or {}
+            data, outcome = self._failures.resolve(count, last_known)
+            if outcome is FailureOutcome.FREEZE:
+                _LOGGER.debug(
+                    "%s/%s read failed (consecutive=%d/%d); freezing on last known data",
+                    device, cmd, count, self._MAX_CONSECUTIVE_FAILURES,
+                )
+            elif outcome is FailureOutcome.UNAVAILABLE:
                 _LOGGER.warning(
                     "%s/%s failed %d times in a row; flipping to unavailable",
-                    device,
-                    cmd,
-                    failures[cmd],
+                    device, cmd, count,
                 )
-            return {}
+            return data
 
         try:
             async with async_timeout.timeout(120):

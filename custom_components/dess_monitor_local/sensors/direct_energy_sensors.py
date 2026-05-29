@@ -1,10 +1,10 @@
 import logging
 import math
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass, RestoreSensor
-from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfTime, PERCENTAGE
+from homeassistant.components.sensor import RestoreSensor, SensorDeviceClass, SensorStateClass
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfEnergy, UnitOfTime
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData
@@ -16,17 +16,15 @@ from custom_components.dess_monitor_local.sanity import (
     is_plausible_power,
     max_step_wh,
 )
-from custom_components.dess_monitor_local.soc_core import (
-    BATTERY_MODE_LEAD_ACID,
-    BATTERY_MODE_LI_BMS,
-    BATTERY_MODE_LI_VOLTAGE,
-    DEFAULT_FLOAT_NOISE_FLOOR_A,
-    DEFAULT_FLOAT_VOLTAGE_WINDOW_V,
-    SocEstimator,
-)
 from custom_components.dess_monitor_local.sensors.direct_sensor import (
     DirectSensorBase,
     DirectTypedSensorBase,
+)
+from custom_components.dess_monitor_local.soc_core import (
+    BATTERY_MODE_LI_BMS,
+    DEFAULT_FLOAT_NOISE_FLOOR_A,
+    DEFAULT_FLOAT_VOLTAGE_WINDOW_V,
+    SocEstimator,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ def _wall_now() -> datetime:
     timestamps (e.g. "last sync was at ..."), not for the trapezoidal
     integrator which uses ``time.monotonic`` to stay immune to clock
     jumps."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):

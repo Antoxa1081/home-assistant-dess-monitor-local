@@ -1,6 +1,5 @@
 """Tests for the SMG-II Modbus pure helpers (api/protocols/modbus_rtu.py):
 signed-register conversion, URI parsing, and the QPIGS/QPIRI projections."""
-import pytest
 
 from custom_components.dess_monitor_local.api.protocols import modbus_rtu
 

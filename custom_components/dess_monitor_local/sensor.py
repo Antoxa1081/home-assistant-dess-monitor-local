@@ -9,18 +9,19 @@ from custom_components.dess_monitor_local.sensors.direct_sensor import (
     PI18_SENSORS,
     generate_qpiri_sensors,
 )
+
 from . import HubConfigEntry
 from .sensors.direct_energy_sensors import (
-    DirectInverterOutputEnergySensor,
-    DirectPV2EnergySensor,
-    DirectPVEnergySensor,
+    DirectBatteryBackupTimeSensor,
     DirectBatteryInEnergySensor,
     DirectBatteryOutEnergySensor,
     DirectBatteryStateOfChargeSensor,
     DirectBatteryTimeToFloorSensor,
     DirectBatteryTimeToFullSensor,
-    DirectBatteryBackupTimeSensor,
     DirectBatteryVSocLastSyncSensor,
+    DirectInverterOutputEnergySensor,
+    DirectPV2EnergySensor,
+    DirectPVEnergySensor,
 )
 
 

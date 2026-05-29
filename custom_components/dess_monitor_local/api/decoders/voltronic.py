@@ -63,7 +63,27 @@ _QPIGS_FIELDS = (
 
 
 def decode_qpigs(ascii_str: str) -> dict:
-    return dict(zip(_QPIGS_FIELDS, ascii_str.split()))
+    result = dict(zip(_QPIGS_FIELDS, ascii_str.split()))
+    # Sanitize the trailing status-bit fields. On firmwares that send a
+    # short QPIGS frame, the 2-byte CRC can bleed into the last token
+    # (e.g. device_status_bits_b10_b8 = "110s"), which breaks any
+    # consumer that does int(value, 2). Keep only the binary digits at
+    # the documented width. See wiki/TECH_DEBT.md.
+    if "device_status_bits_b10_b8" in result:
+        result["device_status_bits_b10_b8"] = _clean_bits(
+            result["device_status_bits_b10_b8"], 3
+        )
+    if "device_status_bits_b7_b0" in result:
+        result["device_status_bits_b7_b0"] = _clean_bits(
+            result["device_status_bits_b7_b0"], 8
+        )
+    return result
+
+
+def _clean_bits(raw: str, width: int) -> str:
+    """Strip non-0/1 chars (CRC bleed / control bytes) and clamp to width."""
+    bits = "".join(c for c in (raw or "") if c in "01")[:width]
+    return bits
 
 
 _QPIGS2_FIELDS = (

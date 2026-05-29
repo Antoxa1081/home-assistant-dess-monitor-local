@@ -5,7 +5,7 @@ efficiency, float deadband, snap-to-100%, the integral-windup fix
 (comment 4528140344 / 4554608022 in issue #5), timestamp de-spam, BMS
 mirror, and capacity rescaling.
 """
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,7 +17,7 @@ from custom_components.dess_monitor_local.soc_core import (
     SocEstimator,
 )
 
-WALL = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
+WALL = datetime(2026, 5, 24, 12, 0, 0, tzinfo=UTC)
 
 
 def make(capacity=200.0, mode=BATTERY_MODE_LI_VOLTAGE, deadband=True):
@@ -157,7 +157,7 @@ class TestSnapToFull:
         est.soc_percent = 100.0
         stamps = []
         for i in range(20):
-            wall = datetime(2026, 5, 24, 12, 0, i, tzinfo=timezone.utc)
+            wall = datetime(2026, 5, 24, 12, 0, i, tzinfo=UTC)
             est.update(signed_current_a=0.0, voltage=27.2, now=float(i),
                        sync_voltage=27.2, floating_voltage=27.2, wall_now=wall)
             stamps.append(est.last_sync_at)

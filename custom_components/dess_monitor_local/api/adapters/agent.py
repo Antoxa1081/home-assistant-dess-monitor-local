@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 import logging
 from typing import Any
-from .base import BaseAdapter
+
 from ..decoders.enums import (
     ChargeSourcePrioritySetting,
     OperatingMode,
@@ -14,6 +15,7 @@ from ..protocols.agent_http import (
     post_agent_setting,
     split_raw_by_command,
 )
+from .base import BaseAdapter
 
 _LOGGER = logging.getLogger(__name__)
 

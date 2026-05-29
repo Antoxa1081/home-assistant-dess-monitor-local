@@ -36,7 +36,7 @@ def _coordinator_section(entry: ConfigEntry) -> dict[str, Any]:
         ),
         "devices": coordinator.devices,
         "consecutive_failures": dict(
-            getattr(coordinator, "_consecutive_failures", {}) or {}
+            getattr(getattr(coordinator, "_failures", None), "_counts", {}) or {}
         ),
         "data": coordinator.data,
     }

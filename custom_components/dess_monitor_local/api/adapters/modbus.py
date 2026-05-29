@@ -1,6 +1,7 @@
 from __future__ import annotations
+
 import logging
-from .base import BaseAdapter
+
 from ..decoders.enums import (
     ChargeSourcePrioritySetting,
     OutputSourcePrioritySetting,
@@ -12,6 +13,7 @@ from ..protocols.modbus_rtu import (
     smg2_to_qpiri,
     write_modbus_single_register,
 )
+from .base import BaseAdapter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ class ModbusAdapter(BaseAdapter):
             host, port = parse_modbus_uri(self.uri)
         except Exception:
             return {"error": "invalid modbus device string"}
-        
+
         mapping = {
             OutputSourcePrioritySetting.UTILITY_FIRST: 0,
             OutputSourcePrioritySetting.SOLAR_FIRST: 1,
@@ -57,7 +59,7 @@ class ModbusAdapter(BaseAdapter):
             host, port = parse_modbus_uri(self.uri)
         except Exception:
             return {"error": "invalid modbus device string"}
-        
+
         mapping = {
             ChargeSourcePrioritySetting.UTILITY_FIRST: 0,
             ChargeSourcePrioritySetting.SOLAR_FIRST: 1,
