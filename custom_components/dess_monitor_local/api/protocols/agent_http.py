@@ -15,7 +15,6 @@ source transport.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import urlparse
 
@@ -72,7 +71,7 @@ async def fetch_agent_snapshot(
                     )
                     return None
                 return await resp.json()
-    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+    except (TimeoutError, aiohttp.ClientError) as err:
         _LOGGER.debug("agent unreachable at %s: %s", url, err)
         return None
 
@@ -317,5 +316,5 @@ async def post_agent_setting(
                         "error": f"agent returned non-dict body (HTTP {resp.status})",
                     }
                 return data
-    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+    except (TimeoutError, aiohttp.ClientError) as err:
         return {"ok": False, "error": f"agent unreachable: {err}"}

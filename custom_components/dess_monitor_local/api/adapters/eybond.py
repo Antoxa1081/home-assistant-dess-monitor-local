@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import logging
-from .base import BaseAdapter
+
 from ...const import PROTOCOL_PI18
 from ..decoders.pi18 import decode_pi18_response
 from ..decoders.voltronic import decode_direct_response
-from ..protocols.eybond_dongle import send_eybond_voltronic, send_eybond_set_command
+from ..protocols.eybond_dongle import send_eybond_set_command, send_eybond_voltronic
+from .base import BaseAdapter
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,11 +24,11 @@ class EyBondAdapter(BaseAdapter):
         )
         if not response:
             return {}
-        
+
         try:
             if self.is_pi18:
                 return decode_pi18_response(command, response) or {}
-            
+
             # For PI30, decode to ASCII first
             body, _, _ = response.partition(b"\r")
             ascii_resp = body.decode("ascii", errors="ignore")

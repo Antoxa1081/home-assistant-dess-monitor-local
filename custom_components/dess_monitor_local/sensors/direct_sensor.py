@@ -1,17 +1,39 @@
 import logging
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
-from homeassistant.const import UnitOfElectricPotential, UnitOfPower, UnitOfTemperature, EntityCategory, \
-    UnitOfElectricCurrent, UnitOfFrequency, UnitOfApparentPower
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.const import (
+    EntityCategory,
+    UnitOfApparentPower,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from custom_components.dess_monitor_local import DirectCoordinator
-from custom_components.dess_monitor_local.api.commands.direct_commands import ParallelMode, ChargerSourcePriority, \
-    OutputSourcePriority, ACInputVoltageRange, BatteryType, DeviceStatusBitsB7B0, OperatingMode, \
-    PI18BatteryPowerDirection, PI18DCACPowerDirection, PI18LinePowerDirection, PI18MPPTStatus, \
-    parse_device_status_bits_b7_b0
+from custom_components.dess_monitor_local.api.commands.direct_commands import (
+    ACInputVoltageRange,
+    BatteryType,
+    ChargerSourcePriority,
+    DeviceStatusBitsB7B0,
+    OperatingMode,
+    OutputSourcePriority,
+    ParallelMode,
+    parse_device_status_bits_b7_b0,
+)
+from custom_components.dess_monitor_local.api.decoders.enums import (
+    # PI18 direction/status enums come straight from their real home
+    # rather than being re-exported through direct_commands (a re-export
+    # there reads as an unused import and gets stripped by linters).
+    PI18BatteryPowerDirection,
+    PI18DCACPowerDirection,
+    PI18LinePowerDirection,
+    PI18MPPTStatus,
+)
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
 from custom_components.dess_monitor_local.sanity import (
@@ -428,7 +450,6 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
     @callback
     def _handle_coordinator_update(self) -> None:
         qpigs = self.data.get('qpigs', {})
-        qpiri = self.data.get('qpiri', {})
         if not qpigs:
             self._attr_native_value = None
             self.async_write_ha_state()

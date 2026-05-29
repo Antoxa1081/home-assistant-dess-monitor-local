@@ -4,7 +4,6 @@ synthesis, and QFWS warn_* extraction. These encode every agent-path fix
 from the Easun SMG-II debugging sessions."""
 from custom_components.dess_monitor_local.api.protocols import agent_http
 
-
 # A representative flat agent snapshot (postgen-easun-smg2 shape).
 _RAW = {
     "grid_voltage": "237.0",

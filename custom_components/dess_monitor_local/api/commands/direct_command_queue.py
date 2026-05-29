@@ -1,5 +1,6 @@
 import asyncio
-from typing import Callable, Awaitable, Any
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 
 class CommandQueue:

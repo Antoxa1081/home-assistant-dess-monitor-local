@@ -18,7 +18,6 @@ from ..decoders.enums import (
     OutputSourcePriority,
 )
 
-
 UNIT_ID = 1
 
 

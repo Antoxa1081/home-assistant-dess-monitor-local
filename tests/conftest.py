@@ -1,28 +1,30 @@
-"""Test bootstrap for the pure-logic layer of dess_monitor_local.
+"""Test bootstrap for dess_monitor_local.
 
-Home Assistant is not (and cannot easily be) installed under the test
-interpreter, and importing the integration package normally would run
-``custom_components/dess_monitor_local/__init__.py`` — which pulls in
-``homeassistant.*`` and crashes collection.
+Two modes, chosen automatically by whether Home Assistant is importable:
 
-We sidestep that by pre-registering the parent packages as lightweight
-stub modules whose ``__path__`` points at the real source directories.
-Importing a submodule (e.g. ``...api.crc``) then loads the *real* file
-and resolves its relative imports against the real dirs, but the heavy
-package ``__init__.py`` files are never executed.
+* **HA present** (local dev, the dedicated CI "entities" job): do nothing.
+  The real package ``__init__.py`` runs, every module imports normally,
+  and both the pure-logic tests and the entity tests
+  (``test_entities.py``) execute against the real code.
 
-This only works for modules that don't themselves import homeassistant
-(crc, sanity, enums, the decoders, the pure helper functions in the
-protocol modules). Entity/platform modules are out of scope here.
+* **HA absent** (the lightweight CI matrix on 3.12/3.13): pre-register the
+  parent packages as stub modules whose ``__path__`` points at the real
+  source dirs. Importing a submodule (e.g. ``...api.crc``) then loads the
+  real file and resolves relative imports, but the HA-importing package
+  ``__init__.py`` files never execute. Entity tests skip themselves via
+  ``pytest.importorskip("homeassistant")``.
 """
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import sys
 import types
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _PKG = _ROOT / "custom_components" / "dess_monitor_local"
+
+_HA_AVAILABLE = importlib.util.find_spec("homeassistant") is not None
 
 
 def _stub_package(fullname: str, path: pathlib.Path) -> None:
@@ -36,17 +38,18 @@ def _stub_package(fullname: str, path: pathlib.Path) -> None:
     sys.modules[fullname] = mod
 
 
-# Parent packages, shallowest first.
-_stub_package("custom_components", _ROOT / "custom_components")
-_stub_package("custom_components.dess_monitor_local", _PKG)
-_stub_package("custom_components.dess_monitor_local.api", _PKG / "api")
-_stub_package("custom_components.dess_monitor_local.api.decoders", _PKG / "api" / "decoders")
-_stub_package("custom_components.dess_monitor_local.api.protocols", _PKG / "api" / "protocols")
-_stub_package("custom_components.dess_monitor_local.api.commands", _PKG / "api" / "commands")
+if not _HA_AVAILABLE:
+    # Parent packages, shallowest first.
+    _stub_package("custom_components", _ROOT / "custom_components")
+    _stub_package("custom_components.dess_monitor_local", _PKG)
+    _stub_package("custom_components.dess_monitor_local.api", _PKG / "api")
+    _stub_package("custom_components.dess_monitor_local.api.decoders", _PKG / "api" / "decoders")
+    _stub_package("custom_components.dess_monitor_local.api.protocols", _PKG / "api" / "protocols")
+    _stub_package("custom_components.dess_monitor_local.api.commands", _PKG / "api" / "commands")
+    _stub_package("custom_components.dess_monitor_local.coordinators", _PKG / "coordinators")
 
-# External runtime deps that some protocol modules import at top level but
-# the pure functions under test never actually touch. Stub them so the
-# module body imports cleanly.
-for _name in ("aiohttp",):
-    if _name not in sys.modules:
-        sys.modules[_name] = types.ModuleType(_name)
+    # External runtime deps imported at module top by some protocol modules
+    # but never touched by the pure functions under test.
+    for _name in ("aiohttp",):
+        if _name not in sys.modules:
+            sys.modules[_name] = types.ModuleType(_name)

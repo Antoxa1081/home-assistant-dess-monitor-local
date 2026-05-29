@@ -36,7 +36,7 @@ class InverterDevice:
         self.hub = hub
         self.device_data = device_data
         self.name = name
-        self.firmware_version = f"0.0.1"
+        self.firmware_version = "0.0.1"
         self.model = "DESS Local Device"
 
     @property

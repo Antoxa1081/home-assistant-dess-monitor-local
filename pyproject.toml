@@ -1,0 +1,45 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+# Ad-hoc bench/probe scripts at the repo root aren't part of the
+# integration and don't need to pass lint.
+extend-exclude = [
+    "com-client.py", "com-server.py", "elfin-connect.py",
+    "inverter-connect.py", "mbs_native_test.py", "modbus_test.py",
+    "read_all_regs.py", "test-com-bridge.py", "test_bits.py",
+    "custom_components/dess_monitor_local/test_tty.py",
+]
+
+[tool.ruff.lint]
+# Sensible default rule set: pyflakes (F) + pycodestyle errors (E) +
+# warnings (W) + isort (I) + bugbear (B) + pyupgrade (UP).
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length handled by formatter, not enforced hard
+    "B008",  # function calls in argument defaults (HA selectors use this)
+    # zip() truncation in the decoders is DELIBERATE — short inverter
+    # frames must be tolerated, not raise. strict=True would defeat that,
+    # so we don't require an explicit strict= on every call.
+    "B905",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately import the package via sys.modules stubs and may
+# touch "private" helpers under test.
+"tests/*" = ["E402", "B017"]
+
+[tool.coverage.run]
+source = ["custom_components/dess_monitor_local"]
+branch = true
+
+[tool.coverage.report]
+# Only the HA-free modules are exercised by the suite; entity/platform
+# code needs a full HA harness (tracked separately). Report on what the
+# pure suite actually reaches.
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
