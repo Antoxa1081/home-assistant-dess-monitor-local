@@ -902,24 +902,39 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         # well below −tail) still fails the test and blocks the snap.
         at_tail = abs(signed_current_a) <= tail_current_a
 
+        # Counter update — ASYMMETRIC by design (fixes integral windup):
+        #   * in float (at_voltage & at_tail): grow unbounded. The
+        #     unbounded growth is deliberate — it gives the snap state
+        #     inertia so brief float voltage/current noise (a single
+        #     decay tick) can't drop it below the threshold and make the
+        #     last-sync timestamp flap.
+        #   * on REAL discharge (current below −tail): hard-reset to 0
+        #     *immediately*. Without this, a counter wound up to ~3600
+        #     after hours of float would take ~10h of heavy discharge to
+        #     decay below the threshold — during which SoC stayed frozen
+        #     at 100% ignoring the actual draw. The hard reset drops out
+        #     of snap within one tick.
+        #   * otherwise (mild transients between 0 and −tail): slow decay.
         if at_voltage and at_tail:
             self._at_sync_ticks += 1
+        elif signed_current_a < -tail_current_a:
+            self._at_sync_ticks = 0
         else:
-            # Decay (not hard reset) — one bad tick costs one count, two
-            # good ticks recover. Tolerates brief load transients during
-            # absorption without falsely re-arming from scratch.
             self._at_sync_ticks = max(0, self._at_sync_ticks - 1)
 
         if self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS:
             soc_percent = 100.0
             self._accumulated_charge_ah = max_capacity_ah
-            # Record the wall-clock moment of the snap so the
-            # ``Time Since Last Sync`` diagnostic sensor can show how
-            # fresh the calibration anchor is. Uses wall time (not
-            # monotonic) because the diagnostic is meaningful only as a
-            # human-readable duration; survives across HA restarts via
-            # the integrator's saved extra-state.
-            self._last_sync_at = _wall_now()
+            # Stamp the sync time ONLY on the exact crossing tick. The
+            # counter keeps growing through float, so a plain assignment
+            # here would rewrite the timestamp every poll (~14s) and spam
+            # the HA recorder. Pinning it to ``== _SYNC_DEBOUNCE_TICKS``
+            # captures the real moment the battery first hit 100% and
+            # then leaves it alone until the next charge cycle. Wall time
+            # (not monotonic) so the diagnostic reads as a human duration
+            # and survives restarts via saved extra-state.
+            if self._at_sync_ticks == _SYNC_DEBOUNCE_TICKS:
+                self._last_sync_at = _wall_now()
         else:
             if self._accumulated_charge_ah < 0:
                 self._accumulated_charge_ah = 0.0
