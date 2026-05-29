@@ -6,7 +6,9 @@ name: validate
 
 on:
   push:
-    branches: [main]
+    # TEMP: ci/** included so this feature branch triggers CI on push.
+    # Revert to just [main] before merging.
+    branches: [main, "ci/**"]
   pull_request:
   # Manual "Run workflow" button in the Actions tab.
   workflow_dispatch:
