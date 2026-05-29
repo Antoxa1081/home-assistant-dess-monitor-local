@@ -64,58 +64,68 @@ class _RecordingAdapter(BaseAdapter):
         return {"status": "OK"}
 
 
-def _run(coro):
-    import asyncio
-    return asyncio.run(coro)
-
-
 class TestBaseSemanticCommands:
-    def test_bulk_voltage_format(self):
+    # Async tests: under pytest-hacc the session shares one event loop, so
+    # these must `await` (NOT asyncio.run, which would close that loop and
+    # break every test after it). Marked explicitly though the hass job
+    # runs in asyncio auto mode.
+
+    @pytest.mark.asyncio
+    async def test_bulk_voltage_format(self):
         a = _RecordingAdapter()
-        _run(a.set_battery_bulk_voltage(28.4))
+        await a.set_battery_bulk_voltage(28.4)
         assert a.sent == "PBAV28.40"
 
-    def test_float_voltage_format(self):
+    @pytest.mark.asyncio
+    async def test_float_voltage_format(self):
         a = _RecordingAdapter()
-        _run(a.set_battery_float_voltage(27.2))
+        await a.set_battery_float_voltage(27.2)
         assert a.sent == "PBFV27.20"
 
-    def test_rated_voltage_format(self):
+    @pytest.mark.asyncio
+    async def test_rated_voltage_format(self):
         a = _RecordingAdapter()
-        _run(a.set_rated_battery_voltage(24))
+        await a.set_rated_battery_voltage(24)
         assert a.sent == "PBRV24"
 
-    def test_max_combined_charge_current(self):
+    @pytest.mark.asyncio
+    async def test_max_combined_charge_current(self):
         a = _RecordingAdapter()
-        _run(a.set_max_combined_charge_current(50))
+        await a.set_max_combined_charge_current(50)
         assert a.sent == "MCHGC050"
 
-    def test_battery_charge_current(self):
+    @pytest.mark.asyncio
+    async def test_battery_charge_current(self):
         a = _RecordingAdapter()
-        _run(a.set_battery_charge_current(40))
+        await a.set_battery_charge_current(40)
         assert a.sent == "PBATC040"
 
-    def test_max_utility_charge_current_int(self):
+    @pytest.mark.asyncio
+    async def test_max_utility_charge_current_int(self):
         a = _RecordingAdapter()
-        _run(a.set_max_utility_charge_current(30))
+        await a.set_max_utility_charge_current(30)
         assert a.sent == "MUCHGC030"
 
-    def test_max_utility_charge_current_float(self):
+    @pytest.mark.asyncio
+    async def test_max_utility_charge_current_float(self):
         a = _RecordingAdapter()
-        _run(a.set_max_utility_charge_current(2, float_format=True))
+        await a.set_max_utility_charge_current(2, float_format=True)
         assert a.sent == "MUCHGC02.0"
 
-    def test_output_priority_uses_enum_value(self):
+    @pytest.mark.asyncio
+    async def test_output_priority_uses_enum_value(self):
         a = _RecordingAdapter()
-        _run(a.set_output_source_priority(OutputSourcePrioritySetting.SBU_PRIORITY))
+        await a.set_output_source_priority(OutputSourcePrioritySetting.SBU_PRIORITY)
         assert a.sent == OutputSourcePrioritySetting.SBU_PRIORITY.value
 
-    def test_charge_priority_uses_enum_value(self):
+    @pytest.mark.asyncio
+    async def test_charge_priority_uses_enum_value(self):
         a = _RecordingAdapter()
-        _run(a.set_charge_source_priority(ChargeSourcePrioritySetting.SOLAR_FIRST))
+        await a.set_charge_source_priority(ChargeSourcePrioritySetting.SOLAR_FIRST)
         assert a.sent == ChargeSourcePrioritySetting.SOLAR_FIRST.value
 
-    def test_battery_type_uses_enum_value(self):
+    @pytest.mark.asyncio
+    async def test_battery_type_uses_enum_value(self):
         a = _RecordingAdapter()
-        _run(a.set_battery_type(BatteryTypeSetting.LIFEP04))
+        await a.set_battery_type(BatteryTypeSetting.LIFEP04)
         assert a.sent == BatteryTypeSetting.LIFEP04.value
