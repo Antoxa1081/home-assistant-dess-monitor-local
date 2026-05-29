@@ -2,9 +2,7 @@ name: tests
 
 on:
   push:
-    # TEMP: ci/** re-enabled to iterate on tests on the branch. Drop to
-    # just [main] before merging.
-    branches: [main, "ci/**"]
+    branches: [main]
   pull_request:
   # Manual "Run workflow" button in the Actions tab — lets us test CI on a
   # feature branch without pushing to main or opening a PR.
