@@ -16,6 +16,14 @@ from custom_components.dess_monitor_local.sanity import (
     is_plausible_power,
     max_step_wh,
 )
+from custom_components.dess_monitor_local.soc_core import (
+    BATTERY_MODE_LEAD_ACID,
+    BATTERY_MODE_LI_BMS,
+    BATTERY_MODE_LI_VOLTAGE,
+    DEFAULT_FLOAT_NOISE_FLOOR_A,
+    DEFAULT_FLOAT_VOLTAGE_WINDOW_V,
+    SocEstimator,
+)
 from custom_components.dess_monitor_local.sensors.direct_sensor import (
     DirectSensorBase,
     DirectTypedSensorBase,
@@ -24,69 +32,16 @@ from custom_components.dess_monitor_local.sensors.direct_sensor import (
 _LOGGER = logging.getLogger(__name__)
 
 
-# Battery chemistry / connection presets driving the SoC algorithm.
-# Keep names in sync with select.BATTERY_MODE_* constants — duplicated here
-# rather than imported to keep this module free of select-platform deps.
-BATTERY_MODE_LI_VOLTAGE = "Lithium (Voltage)"
-BATTERY_MODE_LI_BMS = "Lithium (BMS)"
-BATTERY_MODE_LEAD_ACID = "Lead-acid"
-
-# Per-mode tuning. Since the integrator now operates on Ah (Coulomb
-# counting) instead of Wh, ``charge_eff`` reflects *Coulombic* efficiency:
-# how much charge actually stays in the cells per Ah pushed in. LFP is
-# nearly lossless at the Coulomb level (~99%); voltage hysteresis between
-# charge and discharge curves accounts for most of the LFP round-trip loss
-# but it's a *voltage* effect, not a Coulomb effect, so it disappears here.
-# Lead-acid loses real Coulombs to gassing and self-discharge — hence the
-# lower factor. ``tail_c_rate`` is the absorption-tail current threshold
-# as a fraction of nominal capacity (0.05C = 5 A on a 100 Ah bank). Lead
-# needs a tighter tail (0.02C) because absorption is slower and we want
-# to wait until current really tapers off.
-_CHEMISTRY_PARAMS = {
-    BATTERY_MODE_LI_VOLTAGE: {
-        "charge_eff": 0.99,
-        "discharge_eff": 1.0,
-        "tail_c_rate": 0.05,
-    },
-    BATTERY_MODE_LEAD_ACID: {
-        "charge_eff": 0.90,
-        "discharge_eff": 0.95,
-        "tail_c_rate": 0.02,
-    },
-    # BMS mode bypasses the integrator entirely — params unused.
-    BATTERY_MODE_LI_BMS: {
-        "charge_eff": 1.0,
-        "discharge_eff": 1.0,
-        "tail_c_rate": 0.05,
-    },
-}
-
-# Snap-to-100% only fires after this many consecutive ticks at/above the
-# sync voltage. With the default 10s poll interval that's ~30 sec, which
-# safely filters transient voltage spikes from load steps or parser glitches
-# while staying short enough that real absorption phase always trips it.
-_SYNC_DEBOUNCE_TICKS = 3
-
-# Float-mode deadband. Several PI30 / Easun / Anern firmware variants
-# quantise ``battery_(charging|discharge)_current`` to integer Amperes.
-# Real float-mode current is ~0.1-0.5 A (cell self-discharge + DC-DC
-# losses); the firmware rounds it to 0 A or 1 A on every tick. Naively
-# integrating those 1 A samples credits the integrator with a phantom
-# ~0.5 A average discharge, pulling SoC down ~0.25-0.3 %/hour even
-# though the pack is truly idle.
-#
-# Counter-measure: when the inverter is clearly in float (terminal
-# voltage steady within ±window of the float setpoint) AND the reported
-# current is at or below the quantisation noise floor, skip the
-# trapezoidal step entirely. Any real load above the floor exits the
-# deadband immediately and integration resumes.
-#
-# These two values are only DEFAULTS now — they seed the user-facing
-# "vSoC Float Voltage Window" / "vSoC Float Noise Floor" number entities
-# and serve as the fallback when those entities are missing/unavailable.
-# The "vSoC Float Deadband" switch gates the whole mechanism.
-_FLOAT_VOLTAGE_WINDOW_V = 0.5
-_FLOAT_NOISE_FLOOR_A = 1.5
+# The SoC algorithm (Coulomb counting, float deadband, snap-to-100%,
+# integral-windup-safe debounce, BMS mirror) lives in the HA-free
+# ``soc_core.SocEstimator`` so it can be unit-tested in isolation. The
+# chemistry presets, debounce threshold and float-deadband defaults are
+# all defined there; this module only re-uses the mode names and float
+# defaults imported above. ``DirectBatteryStateOfChargeSensor`` is a thin
+# adapter that resolves HA-bound inputs (capacity / mode / voltages from
+# entities) and feeds them into a per-battery ``SocEstimator`` instance.
+_FLOAT_VOLTAGE_WINDOW_V = DEFAULT_FLOAT_VOLTAGE_WINDOW_V
+_FLOAT_NOISE_FLOOR_A = DEFAULT_FLOAT_NOISE_FLOOR_A
 
 
 def _wall_now() -> datetime:
@@ -468,15 +423,10 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
             sensor_suffix="battery_state_of_charge",
             name_suffix="Battery State of Charge",
         )
-        # Coulomb counter: accumulated *charge* in Ah, not energy in Wh.
-        # SoC% = (_accumulated_charge_ah / _battery_capacity_ah) × 100.
-        self._accumulated_charge_ah = 0.0
-        # Latest signed current (A): + charging, − discharging.
-        self._prev_current_a = None
-        # Efficiency-adjusted twin of _prev_current_a used by the integrator.
-        # Kept separate so the raw value stays available for diagnostics.
-        self._prev_effective_current_a = None
-        self._prev_ts = time.monotonic()
+        # All the Coulomb-counting / snap / deadband state and logic lives
+        # in the HA-free estimator (unit-tested in tests/test_soc_core.py).
+        # This entity just resolves HA-bound inputs and copies results out.
+        self._estimator = SocEstimator()
         self._restored = False
         self._hass = hass
 
@@ -503,30 +453,11 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._float_noise_floor_id = (
             f"number.{device_slug}_vsoc_float_noise_floor"
         )
-        self._float_deadband_enabled = True
-        self._float_voltage_window = _FLOAT_VOLTAGE_WINDOW_V
-        self._float_noise_floor = _FLOAT_NOISE_FLOOR_A
-        self._battery_capacity_ah = None
         # User-defined override for the SoC snap-to-100% voltage. 0 = use
-        # inverter's bulk_charging_voltage. See FullChargeSyncVoltageNumber
-        # for the rationale (LiFePO4 chemistries reach 100% below the
-        # inverter's bulk target).
+        # inverter's bulk_charging_voltage. Resolution stays in the entity
+        # (it reads HA state); the resolved value is passed into the
+        # estimator on each tick.
         self._full_charge_sync_voltage = 0.0
-        # Active chemistry preset; falls back to the LFP-voltage strategy
-        # whenever the select hasn't restored yet — that matches existing
-        # behavior so the upgrade is a no-op for users who don't touch
-        # the mode dropdown.
-        self._battery_mode = BATTERY_MODE_LI_VOLTAGE
-        # Debounce counter for the voltage-based snap (trigger A). Counts
-        # consecutive ticks at/above sync_voltage; resets when V falls
-        # below sync_voltage − hysteresis_v.
-        self._at_sync_ticks = 0
-        # Wall-clock timestamp of the most recent snap-to-100% event.
-        # Surfaced by the ``vSoC Last Full Charge Sync`` diagnostic sensor
-        # so the user can see how fresh the Coulomb-counter calibration
-        # is. ``None`` until the first snap (or first successful restore
-        # from extra-state).
-        self._last_sync_at: datetime | None = None
 
         async_track_state_change_event(
             self._hass,
@@ -558,23 +489,32 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         if last_extra is not None:
             data = last_extra.as_dict()
             restored_value = data.get("native_value")
-            self._attr_native_value = float(restored_value) if restored_value is not None else 100.0
+            soc = float(restored_value) if restored_value is not None else 100.0
             # Pre-Ah saves used "accumulated_energy_wh" — that value is in
             # Wh, not Ah, so it's not meaningfully restorable. Fall back to
             # 0 and let the next full-charge snap re-anchor the integrator.
-            self._accumulated_charge_ah = float(data.get("accumulated_charge_ah", 0))
+            accumulated = float(data.get("accumulated_charge_ah", 0))
             # Restore the last-snap timestamp so the diagnostic survives
             # HA restarts. ``fromisoformat`` raises on malformed input —
             # tolerate by leaving the timestamp as None.
+            last_sync = None
             iso = data.get("last_sync_at")
             if isinstance(iso, str) and iso:
                 try:
-                    self._last_sync_at = datetime.fromisoformat(iso)
+                    last_sync = datetime.fromisoformat(iso)
                 except ValueError:
-                    self._last_sync_at = None
+                    last_sync = None
         else:
-            self._attr_native_value = 100.0
-            self._accumulated_charge_ah = 0.0
+            soc = 100.0
+            accumulated = 0.0
+            last_sync = None
+
+        self._estimator.restore(
+            soc_percent=soc,
+            accumulated_charge_ah=accumulated,
+            last_sync_at=last_sync,
+        )
+        self._attr_native_value = soc
 
         state = self._hass.states.get(self._capacity_entity_id)
         self._update_battery_capacity_from_state(state)
@@ -595,8 +535,8 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         """Сохранение данных при выгрузке / рестарте."""
         return BatteryStoredData(
             self._attr_native_value,
-            self._accumulated_charge_ah,
-            self._last_sync_at,
+            self._estimator.accumulated_charge_ah,
+            self._estimator.last_sync_at,
         )
 
     @property
@@ -605,8 +545,9 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         # Допустимый порог snap-to-100% есть либо от инвертора (bulk), либо
         # от пользовательского override — нужно хоть что-то одно.
         sync_voltage = self.get_full_charge_sync_voltage()
+        capacity = self._estimator.capacity_ah
         return super().available and self._restored and (
-                self._battery_capacity_ah is not None and self._battery_capacity_ah > 0) and (
+                capacity is not None and capacity > 0) and (
                 sync_voltage is not None)
 
     @callback
@@ -615,52 +556,24 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._update_battery_capacity_from_state(state)
 
     def _update_battery_capacity_from_state(self, state):
-        # Ёмкость ещё не доступна (например, number-сущность не восстановилась
-        # на старте HA). Не трогаем восстановленный _attr_native_value и
-        # _accumulated_energy_wh — сенсор просто станет недоступен, пока
-        # ёмкость не появится.
+        # Parse the capacity number entity's HA state and push it into the
+        # estimator. The proportional SoC-preserving rescale lives in
+        # SocEstimator.set_capacity(); missing / invalid / ≤0 -> None marks
+        # the sensor unavailable until a valid capacity is entered.
         if state is None or state.state in ("unknown", "unavailable", None):
-            self._battery_capacity_ah = None
+            self._estimator.set_capacity(None)
             self.async_write_ha_state()
             return
         try:
             value = float(state.state)
         except (ValueError, TypeError):
-            self._battery_capacity_ah = None
+            self._estimator.set_capacity(None)
             self.async_write_ha_state()
             return
 
-        if value <= 0:
-            self._battery_capacity_ah = None
-            self.async_write_ha_state()
-            return
-
-        old_capacity = self._battery_capacity_ah
-        self._battery_capacity_ah = value
-
-        if old_capacity is None:
-            # Ёмкость появилась впервые (или после restart). Сохраняем SoC в
-            # процентах: пересчитываем _accumulated_energy_wh из restored SoC,
-            # чтобы не потерять значение после перезапуска HA.
-            if self._attr_native_value is not None:
-                soc_fraction = max(0.0, min(1.0, float(self._attr_native_value) / 100.0))
-                self._accumulated_charge_ah = soc_fraction * value
-            else:
-                self._accumulated_charge_ah = value
-                self._attr_native_value = 100.0
-        else:
-            # Пользователь изменил ёмкость батареи — сохраняем процент SoC
-            # (пропорционально пересчитываем накопленную энергию).
-            if old_capacity > 0:
-                soc_fraction = self._accumulated_charge_ah / old_capacity
-            elif self._attr_native_value is not None:
-                soc_fraction = float(self._attr_native_value) / 100.0
-            else:
-                soc_fraction = 1.0
-            soc_fraction = max(0.0, min(1.0, soc_fraction))
-            self._accumulated_charge_ah = soc_fraction * value
-            self._attr_native_value = soc_fraction * 100.0
-
+        self._estimator.set_capacity(value)
+        if self._estimator.capacity_ah is not None and self._estimator.soc_percent is not None:
+            self._attr_native_value = self._estimator.soc_percent
         self.async_write_ha_state()
 
     def get_bulk_charging_voltage(self) -> float | None:
@@ -707,15 +620,12 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._update_battery_mode_from_state(state)
 
     def _update_battery_mode_from_state(self, state):
-        if state is None or state.state not in _CHEMISTRY_PARAMS:
-            # Keep current mode; don't flip back to default on transient
-            # 'unknown' states during HA restart.
+        if state is None:
             return
-        if state.state != self._battery_mode:
-            # Reset the snap debounce so a mode flip doesn't carry over
-            # stale "near sync" state from the previous chemistry.
-            self._at_sync_ticks = 0
-        self._battery_mode = state.state
+        # set_mode ignores unknown values (so a transient 'unknown' during
+        # restart is a no-op) and resets the snap debounce only on a real
+        # chemistry change.
+        self._estimator.set_mode(state.state)
 
     @callback
     def _handle_float_deadband_change(self, event):
@@ -723,32 +633,40 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self._refresh_float_deadband_config()
 
     def _refresh_float_deadband_config(self) -> None:
-        """Pull current values of the float-deadband switch + numbers.
+        """Pull current values of the float-deadband switch + numbers and
+        push them into the estimator.
 
         Each control falls back to its historical default when the
         entity is missing / unavailable, so the deadband keeps working
         exactly as before for users who never touch the new controls."""
+        enabled = True
         switch_state = self._hass.states.get(self._float_deadband_switch_id)
         if switch_state is not None and switch_state.state in ("on", "off"):
-            self._float_deadband_enabled = switch_state.state == "on"
+            enabled = switch_state.state == "on"
 
+        window = _FLOAT_VOLTAGE_WINDOW_V
         window_state = self._hass.states.get(self._float_voltage_window_id)
         if window_state is not None and window_state.state not in (
             "unknown", "unavailable", None
         ):
             try:
-                self._float_voltage_window = max(0.0, float(window_state.state))
+                window = max(0.0, float(window_state.state))
             except (ValueError, TypeError):
-                self._float_voltage_window = _FLOAT_VOLTAGE_WINDOW_V
+                window = _FLOAT_VOLTAGE_WINDOW_V
 
+        noise_floor = _FLOAT_NOISE_FLOOR_A
         floor_state = self._hass.states.get(self._float_noise_floor_id)
         if floor_state is not None and floor_state.state not in (
             "unknown", "unavailable", None
         ):
             try:
-                self._float_noise_floor = max(0.0, float(floor_state.state))
+                noise_floor = max(0.0, float(floor_state.state))
             except (ValueError, TypeError):
-                self._float_noise_floor = _FLOAT_NOISE_FLOOR_A
+                noise_floor = _FLOAT_NOISE_FLOOR_A
+
+        self._estimator.set_deadband(
+            enabled=enabled, window=window, noise_floor=noise_floor
+        )
 
     def get_floating_charging_voltage(self) -> float | None:
         try:
@@ -763,194 +681,42 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
     @property
     def capacity_ah(self) -> float | None:
         """Expose the user-set capacity to downstream sensors (time-to-* etc.)."""
-        return self._battery_capacity_ah
+        return self._estimator.capacity_ah
 
     @property
     def last_sync_at(self) -> datetime | None:
         """Wall-clock UTC moment of the most recent snap-to-100% event."""
-        return self._last_sync_at
+        return self._estimator.last_sync_at
 
     def update_soc(self, signed_current_a: float, current_voltage: float):
-        """Coulomb-counting SoC update.
+        """Advance the SoC estimator and publish the result.
 
-        Args:
-            signed_current_a: + when charging, − when discharging, A.
-            current_voltage: terminal voltage for the snap triggers.
+        Resolves the HA-bound inputs (snap voltage from the override
+        number / inverter bulk, float voltage from QPIRI, BMS SoC from
+        QPIGS) and hands them — plus injected wall/monotonic time — to the
+        pure ``SocEstimator``. All the algorithm (Coulomb counting, float
+        deadband, snap-to-100%, integral-windup-safe debounce) lives there
+        and is unit-tested in tests/test_soc_core.py.
         """
-        if self._battery_capacity_ah is None or self._battery_capacity_ah <= 0:
-            # Емкость не задана — сенсор unavailable.
-            self._attr_native_value = None
-            self.async_write_ha_state()
-            return
-
-        max_capacity_ah = self._battery_capacity_ah
-        params = _CHEMISTRY_PARAMS[self._battery_mode]
-
-        # ---------- BMS mirror branch ---------------------------------
-        # COMM-LI: QPIGS.battery_capacity carries the BMS-reported SoC %.
-        # Use it verbatim and keep the integrator state aligned with it —
-        # mode switch back to voltage tracking then starts from a sane
-        # Coulomb baseline instead of stale junk.
-        if self._battery_mode == BATTERY_MODE_LI_BMS:
-            bms_soc = self._read_bms_soc()
-            if bms_soc is not None:
-                self._accumulated_charge_ah = (bms_soc / 100.0) * max_capacity_ah
-                # Null the effective-current twin so the first tick after
-                # the user flips back to voltage mode skips the trapezoid
-                # (no stale baseline → no spurious step).
-                self._prev_current_a = signed_current_a
-                self._prev_effective_current_a = None
-                self._prev_ts = time.monotonic()
-                self._at_sync_ticks = 0
-                self._attr_native_value = round(bms_soc, 2)
-                self.async_write_ha_state()
-                return
-            # BMS read miss — fall through to integrator so the sensor
-            # doesn't go dark on a transient handshake glitch.
-
-        # ---------- Voltage-based branch (Lithium voltage / Lead-acid) --
         sync_voltage = self.get_full_charge_sync_voltage()
         floating_voltage = self.get_floating_charging_voltage()
-        if sync_voltage is None:
-            self._attr_native_value = None
-            self.async_write_ha_state()
-            return
-
-        now = time.monotonic()
-        elapsed_seconds = now - self._prev_ts
-
-        # ---------- Float-mode deadband -------------------------------
-        # Several inverter firmwares quantise discharge_current to integer
-        # Amperes. In float mode the real cell current is fractional
-        # (0.1-0.5 A self-discharge / DC-DC losses), so the firmware
-        # alternates between 0 A and 1 A reports — naively integrating
-        # those 1 A samples credits ~0.5 A phantom discharge and drains
-        # the SoC by ~0.3 %/h while the battery is actually idle. Detect
-        # float by: terminal V close to float setpoint, current at/below
-        # the quantisation noise floor; if both true, skip integration
-        # this tick.
-        in_float_deadband = (
-            self._float_deadband_enabled
-            and floating_voltage is not None
-            and abs(current_voltage - floating_voltage) < self._float_voltage_window
-            and abs(signed_current_a) <= self._float_noise_floor
+        bms_soc = (
+            self._read_bms_soc()
+            if self._estimator.mode == BATTERY_MODE_LI_BMS
+            else None
         )
 
-        # Coulombic efficiency. LFP is nearly lossless at the Coulomb
-        # level (≈0.99 charge / 1.0 discharge); lead loses real charge
-        # to gassing on the charge side and to self-discharge on the
-        # discharge side. Keeping the factors split lets the integrator
-        # stay signed and symmetric.
-        if signed_current_a >= 0:
-            effective_current_a = signed_current_a * params["charge_eff"]
-        else:
-            effective_current_a = signed_current_a / params["discharge_eff"]
-
-        if in_float_deadband:
-            # Treat the tick as idle — don't accumulate the quantisation
-            # noise. Reset prev baseline so the next out-of-deadband
-            # tick starts a fresh trapezoid (no stale value averaged in).
-            self._prev_current_a = signed_current_a
-            self._prev_effective_current_a = None
-            self._prev_ts = now
-        else:
-            if self._prev_effective_current_a is not None:
-                # Trapezoidal Coulomb count: ΔAh = avg(I) × Δt (hours).
-                charge_increment = (elapsed_seconds / 3600) * (
-                    self._prev_effective_current_a + effective_current_a
-                ) / 2
-                self._accumulated_charge_ah += charge_increment
-
-            self._prev_current_a = signed_current_a
-            self._prev_effective_current_a = effective_current_a
-            self._prev_ts = now
-
-        # ---------- Snap-to-100% --------------------------------------
-        # Battery is genuinely full only when BOTH conditions hold:
-        #   (a) terminal voltage has reached the absorption / float setpoint
-        #       (CV phase entered), AND
-        #   (b) charge current has tapered to the absorption-tail threshold
-        #       (battery can no longer accept full current at this voltage).
-        #
-        # Earlier revisions snapped on (a) alone, but for LFP that transition
-        # happens at ~80-90% real SoC — the remaining 10-20% comes from the
-        # CV tail. Voltage-only snap caused jumps like 70 → 100% the moment
-        # bulk_voltage was hit.
-        #
-        # The voltage threshold uses min(sync, float) because the charger
-        # can reach "full" via either path: stayed at bulk until tail
-        # (absorption complete), or already dropped to float and tail.
-        # Either way, voltage at-or-above whichever is *lower* + tail
-        # current is the correct condition.
-        tail_current_a = max_capacity_ah * params["tail_c_rate"]
-        v_full_threshold = (
-            min(sync_voltage, floating_voltage)
-            if floating_voltage is not None and floating_voltage > 0
-            else sync_voltage
+        result = self._estimator.update(
+            signed_current_a=signed_current_a,
+            voltage=current_voltage,
+            now=time.monotonic(),
+            sync_voltage=sync_voltage,
+            floating_voltage=floating_voltage,
+            bms_soc=bms_soc,
+            wall_now=_wall_now(),
         )
-        at_voltage = current_voltage >= v_full_threshold
-        # "Tail" = current magnitude has dropped into the absorption-tail
-        # band. Use abs() so the condition is satisfied by ALL three
-        # genuinely-full states:
-        #   * absorption tail   — small positive (charger topping off)
-        #   * float idle        — exactly 0 A (or quantised to 0)
-        #   * float self-loss   — small negative (cell self-discharge)
-        # An earlier ``0 < signed_current_a`` lower bound excluded the
-        # 0 A float-idle case, so a fully-charged battery sitting in
-        # float never snapped — SoC froze at whatever sub-100 value the
-        # Coulomb counter happened to hold. A real discharge (current
-        # well below −tail) still fails the test and blocks the snap.
-        at_tail = abs(signed_current_a) <= tail_current_a
 
-        # Counter update — ASYMMETRIC by design (fixes integral windup):
-        #   * in float (at_voltage & at_tail): grow unbounded. The
-        #     unbounded growth is deliberate — it gives the snap state
-        #     inertia so brief float voltage/current noise (a single
-        #     decay tick) can't drop it below the threshold and make the
-        #     last-sync timestamp flap.
-        #   * on REAL discharge (current below −tail): hard-reset to 0
-        #     *immediately*. Without this, a counter wound up to ~3600
-        #     after hours of float would take ~10h of heavy discharge to
-        #     decay below the threshold — during which SoC stayed frozen
-        #     at 100% ignoring the actual draw. The hard reset drops out
-        #     of snap within one tick.
-        #   * otherwise (mild transients between 0 and −tail): slow decay.
-        if at_voltage and at_tail:
-            self._at_sync_ticks += 1
-        elif signed_current_a < -tail_current_a:
-            self._at_sync_ticks = 0
-        else:
-            self._at_sync_ticks = max(0, self._at_sync_ticks - 1)
-
-        if self._at_sync_ticks >= _SYNC_DEBOUNCE_TICKS:
-            soc_percent = 100.0
-            self._accumulated_charge_ah = max_capacity_ah
-            # Stamp the sync time ONLY on the exact crossing tick. The
-            # counter keeps growing through float, so a plain assignment
-            # here would rewrite the timestamp every poll (~14s) and spam
-            # the HA recorder. Pinning it to ``== _SYNC_DEBOUNCE_TICKS``
-            # captures the real moment the battery first hit 100% and
-            # then leaves it alone until the next charge cycle. Wall time
-            # (not monotonic) so the diagnostic reads as a human duration
-            # and survives restarts via saved extra-state.
-            if self._at_sync_ticks == _SYNC_DEBOUNCE_TICKS:
-                self._last_sync_at = _wall_now()
-        else:
-            if self._accumulated_charge_ah < 0:
-                self._accumulated_charge_ah = 0.0
-            elif self._accumulated_charge_ah > max_capacity_ah:
-                self._accumulated_charge_ah = max_capacity_ah
-
-            soc_percent = (self._accumulated_charge_ah / max_capacity_ah) * 100
-
-        # Round to 2 dp before publishing. The raw Coulomb ratio carries
-        # ~14 significant digits of floating-point noise; storing it
-        # verbatim makes the History/statistics graph auto-scale onto a
-        # meaningless 1e-13 jitter band. 0.01% resolution (≈0.02 Ah on a
-        # 200 Ah bank) is far finer than any real SoC accuracy.
-        soc_percent = round(max(0.0, min(100.0, soc_percent)), 2)
-
-        self._attr_native_value = soc_percent
+        self._attr_native_value = result
         self.async_write_ha_state()
 
     def _read_bms_soc(self) -> float | None:

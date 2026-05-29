@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pytest
+        # The pure-logic test suite needs no Home Assistant — tests/conftest.py
+        # stubs the package parents so the HA-free modules import standalone.
+        run: pip install pytest
+
+      - name: Run tests
+        # -v: name every test in the log (easier PR review than dots).
+        # -o addopts: override the repo's pytest.ini "-q" for CI only.
+        # --durations: surface the 10 slowest tests.
+        run: python -m pytest -v -o addopts="-ra --durations=10"
