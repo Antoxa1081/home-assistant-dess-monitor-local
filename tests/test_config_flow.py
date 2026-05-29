@@ -32,7 +32,7 @@ async def _advance(hass, flow_id, user_input):
 
 
 @pytest.mark.asyncio
-async def test_full_flow_voltronic_tcp_elfin(hass):
+async def test_full_flow_voltronic_tcp_elfin(hass, enable_custom_integrations):
     """Happy path: Voltronic over Elfin TCP creates an entry with a
     correctly composed tcp:// device URI."""
     with patch(
@@ -71,7 +71,7 @@ async def test_full_flow_voltronic_tcp_elfin(hass):
 
 
 @pytest.mark.asyncio
-async def test_connection_step_requires_host(hass):
+async def test_connection_step_requires_host(hass, enable_custom_integrations):
     """Submitting the connection step without a host re-shows the form
     with an error rather than creating an entry."""
     result = await hass.config_entries.flow.async_init(
