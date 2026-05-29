@@ -8,6 +8,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual "Run workflow" button in the Actions tab.
+  workflow_dispatch:
   # Catch upstream HA/HACS rule changes even without a code push.
   schedule:
     - cron: "0 6 * * 1"

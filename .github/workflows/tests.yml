@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual "Run workflow" button in the Actions tab — lets us test CI on a
+  # feature branch without pushing to main or opening a PR.
+  workflow_dispatch:
 
 jobs:
   lint:
