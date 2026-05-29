@@ -120,7 +120,10 @@ class SocEstimator:
                 frac = 1.0
             frac = _clamp(frac, 0.0, 1.0)
             self.accumulated_charge_ah = frac * value
-            self.soc_percent = frac * 100.0
+            # Round to match update()'s output — otherwise a capacity edit
+            # publishes a 14-digit float (e.g. 99.99999999999999) that the
+            # recorder/statistics graph then auto-scales onto fp noise.
+            self.soc_percent = round(frac * 100.0, 2)
 
     def restore(
         self,

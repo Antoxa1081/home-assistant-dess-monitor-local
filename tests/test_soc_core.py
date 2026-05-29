@@ -72,6 +72,14 @@ class TestCapacityRescale:
         est.set_capacity(0.0)
         assert est.capacity_ah is None
 
+    def test_capacity_change_rounds_soc(self):
+        # A capacity edit must publish a 2-dp SoC, not 14-digit fp noise.
+        est = make(capacity=200.0)
+        est.accumulated_charge_ah = 199.99999999999997
+        est.set_capacity(200.0001)
+        assert est.soc_percent == round(est.soc_percent, 2)
+        assert est.soc_percent == 100.0
+
 
 class TestCoulombCounting:
     def test_discharge_drops_soc(self):
