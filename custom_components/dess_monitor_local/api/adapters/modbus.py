@@ -18,8 +18,6 @@ from ..protocols.modbus_rtu import (
     parse_write_response,
     read_modbus_block,
     read_smg2_snapshot_via,
-    smg2_to_qpigs,
-    smg2_to_qpiri,
     smg2_to_snapshot,
     write_modbus_single_register,
 )
@@ -153,21 +151,21 @@ class ModbusAdapter(BaseAdapter):
         return DeviceSnapshot()
 
     async def get_data(self, command: str) -> dict:
-        # Transition shim: derive the legacy QPIGS/QPIRI-shaped sections from
-        # the snapshot's raw registers so entity behaviour is byte-identical
-        # until they migrate to read the model directly (Phase C).
+        # Phase D: SMG-II no longer fabricates Voltronic-shaped QPIGS/QPIRI
+        # sections. Every command returns the same raw register blocks; the
+        # coordinator rebuilds the typed snapshot from them (see
+        # snapshot_from_sections) and all entities read the model. The raw
+        # dict is intentionally truthy so the coordinator's "falsy == failed
+        # read" guard doesn't trip; a genuinely failed read returns {}.
         snapshot = await self.get_snapshot()
         if snapshot is None:
             return {}
         raw = snapshot.raw
-        sensors, config, faults = raw["sensors"], raw["config"], raw["faults"]
-
-        if command == "QPIGS":
-            return smg2_to_qpigs(sensors)
-        if command == "QPIRI":
-            return smg2_to_qpiri(config)
-        # ... other command emulations from dispatcher.py ...
-        return {"sensors": sensors, "config": config, "faults": faults}
+        return {
+            "sensors": raw["sensors"],
+            "config": raw["config"],
+            "faults": raw["faults"],
+        }
 
     async def set_data(self, command: str) -> dict:
         return {"error": "raw set_data is not supported for Modbus; use semantic setters"}

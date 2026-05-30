@@ -63,12 +63,6 @@ from ..protocols.modbus_rtu import (
 from ..protocols.modbus_rtu import (
     read_smg2_snapshot as read_modbus_snapshot_async,
 )
-from ..protocols.modbus_rtu import (
-    smg2_to_qpigs as modbus_to_qpigs,
-)
-from ..protocols.modbus_rtu import (
-    smg2_to_qpiri as modbus_to_qpiri,
-)
 
 __all__ = [
     "ACInputVoltageRange",
@@ -102,8 +96,6 @@ __all__ = [
     "get_direct_data",
     "is_hex_string",
     "modbus_crc16",
-    "modbus_to_qpigs",
-    "modbus_to_qpiri",
     "parse_device_status_bits_b10_b8",
     "parse_device_status_bits_b7_b0",
     "read_modbus_snapshot_async",

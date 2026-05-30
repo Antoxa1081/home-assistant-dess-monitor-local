@@ -1,5 +1,5 @@
 """Tests for the SMG-II Modbus pure helpers (api/protocols/modbus_rtu.py):
-signed-register conversion, URI parsing, and the QPIGS/QPIRI projections.
+signed-register conversion, URI parsing, and the typed snapshot projection.
 
 Also covers the pure RTU framing helpers and the EyBond-modbus transport
 (SMG-II forwarded through a dongle's FC=4 channel)."""
@@ -67,33 +67,6 @@ _SENSORS = {
 }
 
 
-class TestSmg2ToQpigs:
-    def test_discharge_split(self):
-        d = modbus_rtu.smg2_to_qpigs(_SENSORS)
-        # battery_current -14 -> charge 0, discharge 14.
-        assert int(d["battery_charging_current"]) == 0
-        assert int(d["battery_discharge_current"]) == 14
-
-    def test_charge_split(self):
-        d = modbus_rtu.smg2_to_qpigs(dict(_SENSORS, battery_current=8.0))
-        assert int(d["battery_charging_current"]) == 8
-        assert int(d["battery_discharge_current"]) == 0
-
-    def test_voltage_formatting(self):
-        d = modbus_rtu.smg2_to_qpigs(_SENSORS)
-        assert d["battery_voltage"] == "27.30"
-        assert d["grid_voltage"] == "237.0"
-
-    def test_qpigs_shape_keys_present(self):
-        d = modbus_rtu.smg2_to_qpigs(_SENSORS)
-        for key in (
-            "grid_voltage", "battery_voltage", "battery_charging_current",
-            "battery_discharge_current", "device_status_bits_b7_b0",
-            "pv_charging_power",
-        ):
-            assert key in d
-
-
 _CONFIG = {
     "input_voltage_range": 1,
     "battery_low_protection_mains": 24.0,
@@ -106,26 +79,6 @@ _CONFIG = {
     "battery_charging_priority": 2,
     "battery_discharge_recovery_mains": 25.0,
 }
-
-
-class TestSmg2ToQpiri:
-    def test_voltage_passthrough(self):
-        d = modbus_rtu.smg2_to_qpiri(_CONFIG)
-        assert d["bulk_charging_voltage"] == "28.6"
-        assert d["float_charging_voltage"] == "27.2"
-
-    def test_ac_range_ups(self):
-        d = modbus_rtu.smg2_to_qpiri(_CONFIG)
-        assert d["ac_input_voltage_range"] == "UPS"
-
-    def test_ac_range_appliance(self):
-        d = modbus_rtu.smg2_to_qpiri(dict(_CONFIG, input_voltage_range=0))
-        assert d["ac_input_voltage_range"] == "Appliance"
-
-    def test_output_priority_mapped(self):
-        d = modbus_rtu.smg2_to_qpiri(_CONFIG)
-        # 0 -> UtilityFirst per _OUTPUT_PRIORITY_MAP.
-        assert d["output_source_priority"] == "UtilityFirst"
 
 
 class TestSmg2ToSnapshot:
@@ -169,23 +122,31 @@ class TestSmg2ToSnapshot:
         assert "grid_power" in snap.capabilities
         assert snap.raw["sensors"] is _SENSORS
 
-    def test_legacy_shim_byte_identical(self):
-        # The snapshot's raw drives the legacy QPIGS/QPIRI projection, which
-        # must equal the direct projection (behaviour preserved in Phase A).
+    def test_get_data_returns_raw_for_every_command(self):
+        # Phase D: SMG-II no longer fabricates Voltronic-shaped QPIGS/QPIRI.
+        # Every command returns the same raw register blocks; the coordinator
+        # rebuilds the typed snapshot from them.
         async def fake_snapshot(read_block):
             return (dict(_SENSORS), dict(_CONFIG), {})
 
-        modadapter._clear_snapshot_cache()
         uri = "modbus://10.0.0.5:502"
+        expected = {"sensors": _SENSORS, "config": _CONFIG, "faults": {}}
         with patch.object(modadapter, "read_smg2_snapshot_via", side_effect=fake_snapshot):
-            qpigs = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIGS"))
-            modadapter._clear_snapshot_cache()
-            qpiri = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIRI"))
-            modadapter._clear_snapshot_cache()
-            qmod = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QMOD"))
-        assert qpigs == modbus_rtu.smg2_to_qpigs(_SENSORS)
-        assert qpiri == modbus_rtu.smg2_to_qpiri(_CONFIG)
-        assert qmod == {"sensors": _SENSORS, "config": _CONFIG, "faults": {}}
+            for cmd in ("QPIGS", "QPIRI", "QMOD", "QPIGS2", "QPIWS", "QFWS"):
+                modadapter._clear_snapshot_cache()
+                out = asyncio.run(modadapter.ModbusAdapter(uri).get_data(cmd))
+                assert out == expected
+                assert out  # truthy — must not trip the coordinator's failed-read guard
+
+    def test_snapshot_rebuilds_from_raw_sections(self):
+        # The coordinator's snapshot_from_sections recovers the model from the
+        # raw {sensors,config,faults} dict carried in any fetched section.
+        sections = {"qmod": {"sensors": _SENSORS, "config": _CONFIG, "faults": {}}}
+        snap = modadapter.ModbusAdapter("modbus://10.0.0.5:502").snapshot_from_sections(
+            sections
+        )
+        assert snap.metrics.battery_voltage == 27.3
+        assert snap.metrics.bus_voltage is None        # no fabrication
 
 
 class TestRtuFraming:

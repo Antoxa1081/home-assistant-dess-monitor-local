@@ -3,9 +3,9 @@
 URI: ``modbus://<host>:<port>``
 
 Implements raw Modbus RTU framing on top of an asyncio TCP socket — no
-``time.sleep`` and no ``pyserial``. Two helpers translate the SMG-II
-register block into the QPIGS / QPIRI shapes the rest of the
-integration consumes.
+``time.sleep`` and no ``pyserial``. ``smg2_to_snapshot`` projects the
+SMG-II register blocks onto the protocol-neutral domain model the rest of
+the integration consumes (no Voltronic-shaped fabrication).
 """
 from __future__ import annotations
 
@@ -390,98 +390,6 @@ async def read_smg2_snapshot_via(read_block) -> tuple[dict, dict, dict]:
     }
 
     return sensors, config, faults
-
-
-def smg2_to_qpigs(s: dict) -> dict:
-    """Project SMG-II sensor block onto the QPIGS-shaped dict."""
-    bus_voltage = 400  # SMG-II has no dedicated bus voltage register
-
-    battery_charging_current = max(0, int(s["battery_current"]))
-    battery_discharge_current = max(0, int(-s["battery_current"]))
-
-    return {
-        "grid_voltage": f"{s['mains_voltage']:.1f}",
-        "grid_frequency": f"{s['mains_frequency']:.1f}",
-        "ac_output_voltage": f"{s['output_voltage']:.1f}",
-        "ac_output_frequency": f"{s['output_frequency']:.2f}",
-        "output_apparent_power": f"{abs(s['output_active_power']):04d}",
-        "output_active_power": f"{abs(s['output_active_power']):04d}",
-        "load_percent": f"{s['load_percent']:03d}",
-        "bus_voltage": f"{bus_voltage}",
-        "battery_voltage": f"{s['battery_voltage']:.2f}",
-        "battery_charging_current": f"{battery_charging_current:03d}",
-        "battery_capacity": "100",
-        "inverter_heat_sink_temperature": f"{s['temp_inverter']:.1f}",
-        "inverter_dcdc_module_temperature": f"{s['temp_dcdc']:.1f}",
-        "pv_input_current": f"{s['pv_current']:.1f}",
-        "pv_input_voltage": f"{s['pv_voltage']:.1f}",
-        "scc_battery_voltage": f"{s['battery_voltage']:.2f}",
-        "battery_discharge_current": f"{battery_discharge_current:05d}",
-        "device_status_bits_b7_b0": "00010000",
-        "battery_voltage_offset": "00",
-        "eeprom_version": "00",
-        "pv_charging_power": f"{int(s['pv_power']):05d}",
-        "device_status_bits_b10_b8": "010",
-        "grid_ac_in_power": f"{abs(s['mains_power']):05d}",
-    }
-
-
-_OUTPUT_PRIORITY_MAP = {
-    0: OutputSourcePriority.UtilityFirst.name,
-    1: OutputSourcePriority.SolarFirst.name,
-    2: OutputSourcePriority.SBU.name,
-}
-
-_CHARGER_PRIORITY_MAP = {
-    0: ChargerSourcePriority.UtilityFirst.name,
-    1: ChargerSourcePriority.SolarFirst.name,
-    2: ChargerSourcePriority.SolarAndUtility.name,
-    3: ChargerSourcePriority.OnlySolar.name,
-}
-
-
-def smg2_to_qpiri(c: dict) -> dict:
-    """Project SMG-II config block onto the QPIRI-shaped dict."""
-    ac_range_name = (
-        ACInputVoltageRange.UPS.name
-        if c["input_voltage_range"] == 1
-        else ACInputVoltageRange.Appliance.name
-    )
-
-    return {
-        "rated_grid_voltage": "230.0",
-        "rated_input_current": "15.2",
-        "rated_ac_output_voltage": "230.0",
-        "rated_output_frequency": "50.0",
-        "rated_output_current": "15.2",
-        "rated_output_apparent_power": "4000",
-        "rated_output_active_power": "4000",
-        "rated_battery_voltage": "24.0",
-        "low_battery_to_ac_bypass_voltage": f"{c['battery_low_protection_mains']:.1f}",
-        "shut_down_battery_voltage": f"{c['battery_low_protection_offgrid']:.1f}",
-        "bulk_charging_voltage": f"{c['max_charge_voltage']:.1f}",
-        "float_charging_voltage": f"{c['float_charge_voltage']:.1f}",
-        "battery_type": "UserDefined",
-        "max_utility_charging_current": f"{int(c['max_mains_charging_current']):02d}",
-        "max_charging_current": f"{int(c['max_charging_current']):03d}",
-        "ac_input_voltage_range": ac_range_name,
-        "output_source_priority": _OUTPUT_PRIORITY_MAP.get(
-            c["output_priority"], OutputSourcePriority.UtilityFirst.name
-        ),
-        "charger_source_priority": _CHARGER_PRIORITY_MAP.get(
-            c["battery_charging_priority"], ChargerSourcePriority.UtilityFirst.name
-        ),
-        "parallel_max_number": "6",
-        "reserved_uu": "01",
-        "reserved_v": "0",
-        "parallel_mode": "Master",
-        "high_battery_voltage_to_battery_mode": f"{c['battery_discharge_recovery_mains']:.1f}",
-        "solar_work_condition_in_parallel": "0",
-        "solar_max_charging_power_auto_adjust": "1_",
-        "rated_battery_capacity": "200",
-        "reserved_b": "0",
-        "reserved_ccc": "0",
-    }
 
 
 # ---------------------------------------------------------------------------
