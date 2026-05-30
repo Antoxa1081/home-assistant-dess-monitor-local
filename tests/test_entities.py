@@ -232,3 +232,52 @@ class TestTimeToFull:
 def ds_energy_time_to_full(soc_sensor, qpigs):
     ent = des.DirectBatteryTimeToFullSensor(_Dev(), _Coord({"qpigs": qpigs}), soc_sensor)
     return _neutralise_write(ent)
+
+
+# ---------------------------------------------------------------------------
+# Domain-model migration (Phase C): metric sensors prefer the typed snapshot
+# ---------------------------------------------------------------------------
+class _SnapCoord(_Coord):
+    """Coordinator stub exposing both legacy data and a snapshot."""
+
+    def __init__(self, data, snapshot):
+        super().__init__(data)
+        self.snapshots = {"easun_4200": snapshot}
+
+
+class TestSnapshotMetricMigration:
+    def _snap(self, **metric_kwargs):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        return DeviceSnapshot(metrics=Metrics(**metric_kwargs))
+
+    def test_snapshot_value_wins_over_legacy(self):
+        # Legacy says 99.9, snapshot says 27.3 — the typed snapshot wins.
+        snap = self._snap(battery_voltage=27.3)
+        ent = ds.DirectBatteryVoltageSensor(
+            _Dev(), _SnapCoord({"qpigs": {"battery_voltage": "99.9"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 27.3
+
+    def test_fabricated_field_none_goes_unavailable(self):
+        # SMG-II: bus_voltage is None in the model (was a fake "400") → None.
+        snap = self._snap(bus_voltage=None)
+        ent = ds.DirectBusVoltageSensor(
+            _Dev(), _SnapCoord({"qpigs": {"bus_voltage": "400"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value is None
+
+    def test_legacy_fallback_when_no_snapshots(self):
+        # Coordinator without .snapshots → parse the legacy section.
+        ent = ds.DirectBatteryVoltageSensor(
+            _Dev(), _Coord({"qpigs": {"battery_voltage": "27.0"}})
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 27.0

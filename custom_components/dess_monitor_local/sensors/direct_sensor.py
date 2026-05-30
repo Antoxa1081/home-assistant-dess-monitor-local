@@ -82,6 +82,44 @@ class DirectSensorBase(CoordinatorEntity, SensorEntity):
     def data(self):
         return self.coordinator.data[self._inverter_device.inverter_id]
 
+    @property
+    def snapshot(self):
+        """The protocol-neutral DeviceSnapshot for this inverter, or None.
+
+        Domain-model migration (Phase C): sensors prefer the typed snapshot
+        field over the legacy section dict where a mapping exists.
+        """
+        snaps = getattr(self.coordinator, "snapshots", None) or {}
+        return snaps.get(self._inverter_device.inverter_id)
+
+
+# Migration map (Phase C): legacy (section, key) → accessor on the snapshot.
+# Where an entry exists AND a snapshot is available, the typed snapshot value
+# is used (so e.g. SMG-II's previously-fabricated bus_voltage/battery_soc are
+# now None → the sensor goes unavailable instead of showing a fake constant).
+# Unmapped keys (and the no-snapshot path) fall back to the legacy section.
+_SNAPSHOT_FIELD = {
+    ("qpigs", "grid_voltage"): lambda s: s.metrics.grid_voltage,
+    ("qpigs", "grid_frequency"): lambda s: s.metrics.grid_frequency,
+    ("qpigs", "ac_output_voltage"): lambda s: s.metrics.ac_output_voltage,
+    ("qpigs", "ac_output_frequency"): lambda s: s.metrics.ac_output_frequency,
+    ("qpigs", "output_active_power"): lambda s: s.metrics.ac_output_active_power,
+    ("qpigs", "output_apparent_power"): lambda s: s.metrics.ac_output_apparent_power,
+    ("qpigs", "load_percent"): lambda s: s.metrics.load_percent,
+    ("qpigs", "bus_voltage"): lambda s: s.metrics.bus_voltage,
+    ("qpigs", "battery_voltage"): lambda s: s.metrics.battery_voltage,
+    ("qpigs", "battery_charging_current"): lambda s: s.metrics.battery_charge_current,
+    ("qpigs", "battery_discharge_current"): lambda s: s.metrics.battery_discharge_current,
+    ("qpigs", "battery_capacity"): lambda s: s.metrics.battery_soc,
+    ("qpigs", "inverter_heat_sink_temperature"): lambda s: s.metrics.temp_heatsink,
+    ("qpigs", "inverter_dcdc_module_temperature"): lambda s: s.metrics.temp_dcdc,
+    ("qpigs", "pv_input_voltage"): lambda s: s.metrics.pv1.voltage,
+    ("qpigs", "pv_input_current"): lambda s: s.metrics.pv1.current,
+    ("qpigs", "pv_charging_power"): lambda s: s.metrics.pv1.power,
+    ("qpigs", "scc_battery_voltage"): lambda s: s.metrics.scc_battery_voltage,
+    ("qpigs", "grid_ac_in_power"): lambda s: s.metrics.grid_power,
+}
+
 
 class DirectTypedSensorBase(DirectSensorBase):
     """Абстрактный базовый класс для сенсоров, получающих значение по ключу."""
@@ -107,15 +145,22 @@ class DirectTypedSensorBase(DirectSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        section = self.data.get(self.data_section, {})
-        raw_value = section.get(self.data_key)
-        if raw_value is not None:
-            try:
-                self._attr_native_value = float(raw_value)
-            except (ValueError, TypeError):
-                self._attr_native_value = None
+        accessor = _SNAPSHOT_FIELD.get((self.data_section, self.data_key))
+        snapshot = self.snapshot if accessor is not None else None
+        if accessor is not None and snapshot is not None:
+            # Typed value straight from the domain model (already float | None).
+            self._attr_native_value = accessor(snapshot)
         else:
-            self._attr_native_value = None
+            # Legacy path: parse the string section value.
+            section = self.data.get(self.data_section, {})
+            raw_value = section.get(self.data_key)
+            if raw_value is not None:
+                try:
+                    self._attr_native_value = float(raw_value)
+                except (ValueError, TypeError):
+                    self._attr_native_value = None
+            else:
+                self._attr_native_value = None
         self.async_write_ha_state()
 
 
