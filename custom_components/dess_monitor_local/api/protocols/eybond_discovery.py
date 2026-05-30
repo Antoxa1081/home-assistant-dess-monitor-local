@@ -110,6 +110,18 @@ class EybondRegistry:
             rec.last_seen = self._now()
         return rec
 
+    def reset_connection_state(self) -> None:
+        """Mark every record disconnected and clear live peers.
+
+        Called after loading from persistent storage: no TCP session exists
+        yet, so a ``connected`` status carried over from the previous run is
+        stale. Configuration (enabled/protocol/devaddr/name) and timestamps
+        are preserved.
+        """
+        for rec in self._records.values():
+            rec.status = DongleStatus.DISCONNECTED
+            rec.peer = ""
+
     # -- configuration (driven by the options UI, later phases) -----------
     def _ensure(self, pn: str) -> DongleRecord:
         rec = self._records.get(pn)

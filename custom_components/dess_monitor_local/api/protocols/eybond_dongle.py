@@ -163,6 +163,18 @@ def parse_eybond_uri(device: str) -> tuple[str, int, int, str, str | None]:
     return bind_host, bind_port, devaddr, broadcast, announce_ip
 
 
+def _parse_pn_from_uri(device: str) -> str | None:
+    """Extract a ``?pn=<PN>`` query param, if present.
+
+    EyBond hub children encode their target dongle's PN in the URI so the
+    existing dispatcher/adapter path (which only passes the URI) can route
+    to a specific dongle on a shared listener.
+    """
+    query = parse_qs(urlparse(device).query or "")
+    pn = (query.get("pn") or [""])[0].strip()
+    return pn or None
+
+
 def _detect_local_ip() -> str:
     """Best-effort local IP discovery for the announce payload."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -787,6 +799,37 @@ async def _get_manager(
     return mgr
 
 
+async def get_eybond_manager(
+    bind_host: str,
+    bind_port: int,
+    broadcast: str = DEFAULT_BROADCAST,
+    announce_ip: str | None = None,
+    registry: EybondRegistry | None = None,
+) -> EybondManager:
+    """Get/create the manager for a listener, optionally seeding its registry.
+
+    Used by the EyBond hub to start a listener whose discovery registry is
+    the hub's persisted one (so heartbeats populate it directly). If a
+    manager already exists for this port, the provided ``registry`` is
+    adopted only when the existing one is empty (no churn mid-run).
+    """
+    mgr = await _get_manager(bind_host, bind_port, broadcast, announce_ip)
+    if registry is not None and mgr.registry is not registry and len(mgr.registry) == 0:
+        mgr.registry = registry
+    return mgr
+
+
+async def shutdown_eybond_manager(bind_host: str, bind_port: int) -> None:
+    """Stop and drop a single listener (targeted hub unload)."""
+    async with _registry_lock:
+        mgr = _managers.pop((bind_host, bind_port), None)
+    if mgr is not None:
+        _LOGGER.info(
+            "EyBond: targeted shutdown of manager %s:%d", bind_host, bind_port
+        )
+        await mgr.shutdown()
+
+
 async def send_eybond_bytes(
     device: str,
     v_frame: bytes,
@@ -800,6 +843,9 @@ async def send_eybond_bytes(
     ``None`` the legacy single-dongle routing is used.
     """
     bind_host, bind_port, devaddr, broadcast, announce_ip = parse_eybond_uri(device)
+    if pn is None:
+        # Hub children carry their target dongle's PN in the URI query.
+        pn = _parse_pn_from_uri(device)
 
     _LOGGER.debug(
         "EyBond: dispatch frame %s for device=%s "

@@ -71,6 +71,20 @@ class TestDisconnect:
         reg = EybondRegistry(now=_Clock())
         assert reg.mark_disconnected("ghost") is None
 
+    def test_reset_connection_state_clears_stale_connected(self):
+        reg = EybondRegistry(now=_Clock())
+        reg.record_seen("PN_A", "10.0.0.1:1")  # connected
+        reg.set_enabled("PN_A", True)
+        reg.set_protocol("PN_A", "voltronic")
+        reg.reset_connection_state()
+        rec = reg.get("PN_A")
+        # Lifecycle reset, but configuration preserved.
+        assert rec.status is DongleStatus.DISCONNECTED
+        assert rec.peer == ""
+        assert rec.enabled is True
+        assert rec.protocol == "voltronic"
+        assert reg.connected_pns() == []
+
 
 class TestConfiguration:
     def test_setters_create_record_when_absent(self):

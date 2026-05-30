@@ -105,6 +105,21 @@ class TestParseEybondUri:
         assert announce is None
 
 
+class TestParsePnFromUri:
+    def test_pn_present(self):
+        assert ey._parse_pn_from_uri("eybond://0.0.0.0:8899/1?pn=PN0001") == "PN0001"
+
+    def test_pn_with_other_params(self):
+        uri = "eybond-pi18://0.0.0.0:8899/2?pn=ABC123&broadcast=192.168.1.255"
+        assert ey._parse_pn_from_uri(uri) == "ABC123"
+
+    def test_pn_absent_is_none(self):
+        assert ey._parse_pn_from_uri("eybond://0.0.0.0:8899/1") is None
+
+    def test_pn_blank_is_none(self):
+        assert ey._parse_pn_from_uri("eybond://0.0.0.0:8899/1?pn=") is None
+
+
 class TestResolveBroadcast:
     def test_invalid_ip_returns_default(self):
         assert ey._resolve_broadcast_for_announce_ip("not-an-ip") == ey.DEFAULT_BROADCAST

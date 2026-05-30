@@ -381,15 +381,58 @@ Original deliverables (all met):
 - session status
 - enabled/disabled state support
 
-### Phase 3: Hub config entry
+### Phase 3: Hub config entry — ✅ DONE
 
-Add a dedicated EyBond hub config flow.
+Added a dedicated EyBond hub config entry alongside the legacy single-device
+flow. The config flow's first step is now a menu: **Single inverter**
+(unchanged 4-step flow) or **EyBond hub**.
 
-Deliverables:
+Delivered:
 
-- create hub entry
-- configure listener
-- expose discovered devices in options
+- `CONF_ENTRY_KIND` marks an entry as `device` (default/legacy) or
+  `eybond_hub`; `__init__.async_setup_entry` branches on it
+- hub creation step collects name + listener config (bind host/port,
+  broadcast, announce IP, update interval)
+- `eybond_hub.py` runtime: loads the discovery registry from a dedicated
+  `Store` (`{DOMAIN}.eybond_hub.<entry_id>`), starts the listener with that
+  registry (`get_eybond_manager(..., registry=...)`), persists periodically
+  + on unload, and shuts down only its own listener on unload
+  (`shutdown_eybond_manager`)
+- stale `connected` statuses are cleared on load
+  (`EybondRegistry.reset_connection_state`)
+- hub options flow exposes discovered devices and listener settings
+
+Translations added (en/ru + strings.json) for the menu and all new steps.
+
+### Phase 4: Child device polling — ✅ DONE
+
+Reused the existing coordinator/entity stack via a per-child `DeviceTarget`
+(id / uri / protocol / name):
+
+- `DirectCoordinator` accepts explicit targets; data is keyed by the stable
+  child id (`eybond:<pn>:<devaddr>`), commands route to the child URI, which
+  carries `?pn=<PN>` so the dispatcher/adapter reach the right dongle on the
+  shared listener (`_parse_pn_from_uri`)
+- `build_child_targets` turns enabled, protocol-assigned records into targets
+  (Voltronic/PI18 only — the protocols the dongle forwards)
+- one HA device per child under the hub entry; platforms read protocol
+  per-item so a hub can mix Voltronic/PI18 children
+- legacy single-device entries keep `id == uri`, so existing entity
+  `unique_id`s/device identifiers are unchanged
+
+### Phase 5 (partial): Device management UI — ✅ core done
+
+The hub options flow already lets the user, per discovered dongle:
+
+- enable/disable
+- rename
+- choose protocol (`none` = discovered-but-not-polled, voltronic, pi18)
+- set `devaddr`
+
+Edits write the registry → save the Store → bump `CONF_HUB_REVISION` in
+options, which reloads the entry and rebuilds child devices/entities.
+Remaining Phase 5 niceties (force rediscovery, remove stale records, protocol
+auto-probe) are still open.
 
 ### Phase 4: Child device polling
 
@@ -455,8 +498,12 @@ cannot be implemented cleanly.
 
 ## Open Questions
 
-- Where exactly should child-device discovery state live: `options` or a
-  dedicated storage file?
+- ✅ Where exactly should child-device discovery state live: `options` or a
+  dedicated storage file? — **Decided in Phase 3: dedicated `Store`.** The
+  registry (lifecycle + per-device config) lives in
+  `{DOMAIN}.eybond_hub.<entry_id>`; only listener settings + a revision
+  counter live in options. Editing a device bumps the revision to trigger a
+  reload.
 - ✅ Should UDP announce run continuously, or only while there are unidentified
   or missing configured dongles? — **Decided in Phase 1: continuous.** Simpler
   and safer; lets new dongles attach at any time. Can be revisited if the

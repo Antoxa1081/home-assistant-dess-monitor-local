@@ -14,9 +14,36 @@
     "step": {
       "user": {
         "title": "Add DESS Monitor Local",
-        "description": "Give this hub a friendly name. You will pick the inverter protocol, transport, and address on the next steps.",
+        "description": "Add a single inverter, or an EyBond hub that auto-discovers several Wi-Fi dongles on one port.",
+        "menu_options": {
+          "device": "Single inverter",
+          "hub": "EyBond hub (auto-discover multiple dongles)"
+        }
+      },
+      "device": {
+        "title": "Add inverter",
+        "description": "Give this inverter a friendly name. You will pick the protocol, transport, and address on the next steps.",
         "data": {
           "name": "Name"
+        }
+      },
+      "hub": {
+        "title": "Add EyBond hub",
+        "description": "One TCP listener accepts several EyBond dongles, auto-discovered by serial number (PN). After setup, open the hub options to assign a protocol to each discovered dongle.",
+        "data": {
+          "name": "Name",
+          "host": "Bind interface",
+          "port": "Listen port",
+          "eybond_broadcast": "Broadcast address",
+          "eybond_announce_ip": "Announce IP",
+          "update_interval": "Update interval (seconds)"
+        },
+        "data_description": {
+          "host": "Local interface to bind the TCP listener on (usually 0.0.0.0).",
+          "port": "TCP port the dongles connect back to (default 8899).",
+          "eybond_broadcast": "UDP broadcast target used to announce the local server to the dongles.",
+          "eybond_announce_ip": "IP advertised to the dongles. Leave empty for auto-detect; set the host LAN IP in Docker bridge mode.",
+          "update_interval": "How often to poll each enabled child inverter."
         }
       },
       "protocol": {
@@ -62,12 +89,54 @@
     }
   },
   "options": {
+    "abort": {
+      "no_devices": "No EyBond dongles have been discovered yet. Power on a dongle on the same network and wait for it to connect, then try again."
+    },
     "error": {
       "host_required": "Host/IP is required for this transport",
       "serial_required": "Please pick or enter a serial port",
       "agent_device_id_required": "Provider device ID is required for the local agent"
     },
     "step": {
+      "init": {
+        "title": "EyBond hub",
+        "menu_options": {
+          "devices": "Manage discovered devices",
+          "listener": "Listener settings"
+        }
+      },
+      "devices": {
+        "title": "Discovered devices",
+        "description": "Pick a dongle (by serial number / PN) to configure.",
+        "data": {
+          "pn": "Dongle"
+        }
+      },
+      "device_edit": {
+        "title": "Configure dongle {pn}",
+        "description": "Status: {status}. Last seen: {last_seen}. Enable the device and assign a protocol to start polling it.",
+        "data": {
+          "enabled": "Enabled",
+          "name": "Name",
+          "protocol": "Protocol",
+          "eybond_devaddr": "RS485 device address"
+        },
+        "data_description": {
+          "protocol": "Choose 'none' to keep the dongle discovered but not polled.",
+          "eybond_devaddr": "RS485 slave address of the inverter behind this dongle (1 unless daisy-chained)."
+        }
+      },
+      "listener": {
+        "title": "Listener settings",
+        "description": "Change the TCP listener and polling interval. Saving reloads the hub.",
+        "data": {
+          "host": "Bind interface",
+          "port": "Listen port",
+          "eybond_broadcast": "Broadcast address",
+          "eybond_announce_ip": "Announce IP",
+          "update_interval": "Update interval (seconds)"
+        }
+      },
       "protocol": {
         "title": "Connection protocol",
         "description": "Pick the command/data protocol spoken by the inverter or local data source.",
