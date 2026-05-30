@@ -33,9 +33,13 @@ async def async_setup_entry(
     """Add sensors for passed config_entry in HA."""
     hub = config_entry.runtime_data
     new_devices = []
-    is_pi18 = config_entry.options.get(CONF_PROTOCOL) == PROTOCOL_PI18
+    entry_protocol = config_entry.options.get(CONF_PROTOCOL)
 
     for item in hub.items:
+        # Per-item protocol (a hub may mix protocols across children); fall
+        # back to the entry-level option for legacy single-device entries.
+        is_pi18 = (getattr(item, "protocol", None) or entry_protocol) == PROTOCOL_PI18
+
         # Construct the SoC sensor first — the time-to-* sensors hold a
         # reference to it so they read SoC and capacity from the same
         # in-memory state, avoiding any cross-entity state-lookup race

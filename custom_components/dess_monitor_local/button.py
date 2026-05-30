@@ -41,18 +41,22 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     hub = config_entry.runtime_data
-    protocol = config_entry.options.get(CONF_PROTOCOL)
-    if protocol != PROTOCOL_MODBUS:
-        # Other protocols don't expose a single-register fault-reset;
-        # don't pollute their entity list with a button that wouldn't work.
-        return
-
-    device_uri = config_entry.options.get(CONF_DEVICE)
-    if not device_uri:
-        return
+    entry_protocol = config_entry.options.get(CONF_PROTOCOL)
+    entry_device_uri = config_entry.options.get(CONF_DEVICE)
 
     new_entities: list[ButtonEntity] = []
     for item in hub.items:
+        # Per-item protocol (a hub may mix protocols); the exit-fault button
+        # only applies to Modbus SMG-II. Fall back to entry-level values for
+        # legacy single-device entries.
+        protocol = getattr(item, "protocol", None) or entry_protocol
+        if protocol != PROTOCOL_MODBUS:
+            # Other protocols don't expose a single-register fault-reset;
+            # don't pollute their entity list with a button that wouldn't work.
+            continue
+        device_uri = getattr(item, "device_data", None) or entry_device_uri
+        if not device_uri:
+            continue
         new_entities.append(SMG2ExitFaultButton(item, hass, device_uri))
 
     if new_entities:

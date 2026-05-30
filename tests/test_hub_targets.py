@@ -1,0 +1,76 @@
+"""Tests for the per-child DeviceTarget wiring (hub.init + InverterDevice).
+
+A hub entry polls several inverters from one entry; each is a DeviceTarget
+(stable id + transport uri + per-device protocol + name). Hub.init turns
+targets into InverterDevice items that the platforms build entities from.
+
+These import hub.py, which pulls in Home Assistant, so they self-skip on the
+pure CI matrix and run in the hass job (and locally where HA is installed).
+"""
+import asyncio
+
+import pytest
+
+pytest.importorskip("homeassistant")
+
+from custom_components.dess_monitor_local.coordinators.device_target import (  # noqa: E402
+    DeviceTarget,
+)
+from custom_components.dess_monitor_local.hub import Hub  # noqa: E402
+
+
+class _Coord:
+    """Minimal stand-in exposing the .devices the Hub reads."""
+
+    def __init__(self, devices):
+        self.devices = devices
+
+
+def test_device_target_is_frozen():
+    t = DeviceTarget(id="x", uri="x", protocol="voltronic", name="n")
+    with pytest.raises(Exception):
+        t.id = "y"  # frozen dataclass
+
+
+def test_hub_init_builds_items_from_targets():
+    coord = _Coord([
+        DeviceTarget(
+            id="eybond:PN1:1",
+            uri="eybond://0.0.0.0:8899/1?pn=PN1",
+            protocol="voltronic",
+            name="Inv A",
+        ),
+        DeviceTarget(
+            id="eybond:PN2:1",
+            uri="eybond-pi18://0.0.0.0:8899/1?pn=PN2",
+            protocol="pi18",
+            name="Inv B",
+        ),
+    ])
+    hub = Hub(None, "hubname", coord)
+    asyncio.run(hub.init())
+
+    assert len(hub.items) == 2
+    a, b = hub.items
+    # Identity is the stable target id (entity unique_ids / device identifiers).
+    assert a.inverter_id == "eybond:PN1:1"
+    # Transport URI is what command sends use.
+    assert a.device_data == "eybond://0.0.0.0:8899/1?pn=PN1"
+    # Per-item protocol so the hub can mix protocols across children.
+    assert a.protocol == "voltronic"
+    assert a.name == "Inv A"
+    assert b.protocol == "pi18"
+    assert b.inverter_id == "eybond:PN2:1"
+
+
+def test_hub_init_tolerates_bare_string_device():
+    # Defensive: a plain URI string is treated as legacy (id == uri).
+    hub = Hub(None, "hubname", _Coord(["tcp://1.2.3.4:8899"]))
+    asyncio.run(hub.init())
+    assert len(hub.items) == 1
+    item = hub.items[0]
+    assert item.inverter_id == "tcp://1.2.3.4:8899"
+    assert item.device_data == "tcp://1.2.3.4:8899"
+    # No protocol info available from a bare string.
+    assert item.protocol is None
+    assert item.name == "hubname"
