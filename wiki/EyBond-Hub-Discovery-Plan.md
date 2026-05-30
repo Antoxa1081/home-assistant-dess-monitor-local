@@ -298,21 +298,45 @@ Possible future migration helper:
 
 ## Implementation Phases
 
-### Phase 1: Multi-session foundation
+### Phase 1: Multi-session foundation — ✅ DONE
 
-Implement multi-session EyBond manager with routing by `PN`.
+Implemented the multi-session EyBond manager with routing by `PN` in
+`api/protocols/eybond_dongle.py`. The entity/HA layer is unchanged.
 
-Deliverables:
+Delivered:
 
-- multiple TCP sessions on one port
-- identify dongles by `PN`
-- internal API:
+- multiple TCP sessions coexist on one listener (`_sessions: set[_Session]`)
+- a new connection never evicts an existing one
+- dongles identified by `PN` from the heartbeat → `_sessions_by_pn`
+- per-PN readiness gating (`_ready_by_pn`) plus a legacy `_any_ready` gate
+- per-session heartbeat task (`_Session.hb_task`)
+- continuous UDP announcer (no longer stopped after the first connection)
+- same-PN reconnect evicts the stale session
+- disconnect of one dongle does not affect others
+- `send_frame(devaddr, v_frame, timeout, context, pn=None)` — routes by PN;
+  `pn=None` preserves legacy single-dongle behaviour
+- `pn` threaded through `send_eybond_bytes` / `send_eybond_voltronic` /
+  `send_eybond_set_command` so later phases can target a specific dongle
+
+Internal routing entry (PN-aware):
 
 ```python
-send_voltronic(pn, devaddr, command, timeout)
+await send_eybond_voltronic(device, command, timeout, protocol, pn=<PN>)
 ```
 
-This phase should not yet change the entity model.
+Implementation notes / decisions:
+
+- `_Session` is `@dataclass(eq=False)` so instances are identity-hashable
+  (usable as `set` elements / dict values).
+- Announcer runs continuously (the simpler, safer option from the open
+  questions below) — additional dongles can attach at any time.
+- Tests: `tests/test_eybond_dongle.py::TestMultiSession` drives the manager
+  with in-memory fake `StreamReader`/`StreamWriter` (no real socket) and
+  covers: PN learned from heartbeat, two dongles coexist without eviction,
+  routing targets the correct PN, disconnect isolation, same-PN reconnect
+  eviction, legacy `pn=None` routing, and no-dongle timeout.
+
+This phase does not change the entity model.
 
 ### Phase 2: Discovery registry
 
@@ -401,8 +425,10 @@ cannot be implemented cleanly.
 
 - Where exactly should child-device discovery state live: `options` or a
   dedicated storage file?
-- Should UDP announce run continuously, or only while there are unidentified or
-  missing configured dongles?
+- ✅ Should UDP announce run continuously, or only while there are unidentified
+  or missing configured dongles? — **Decided in Phase 1: continuous.** Simpler
+  and safer; lets new dongles attach at any time. Can be revisited if the
+  broadcast traffic ever proves problematic.
 - Should newly discovered devices default to `enabled = false` until explicitly
   configured?
 - Do we want protocol auto-probe later as an optional action, while keeping
