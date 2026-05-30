@@ -1,13 +1,12 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 110
-# Ad-hoc bench/probe scripts at the repo root aren't part of the
-# integration and don't need to pass lint.
+# Ad-hoc bench/probe scripts (parked in the gitignored debug/ dir) aren't
+# part of the integration and don't need to pass lint.
 extend-exclude = [
     "com-client.py", "com-server.py", "elfin-connect.py",
     "inverter-connect.py", "mbs_native_test.py", "modbus_test.py",
     "read_all_regs.py", "test-com-bridge.py", "test_bits.py",
-    "custom_components/dess_monitor_local/test_tty.py",
 ]
 
 [tool.ruff.lint]

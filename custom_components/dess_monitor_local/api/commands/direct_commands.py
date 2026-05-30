@@ -7,8 +7,6 @@ the dedicated modules instead.
 """
 from __future__ import annotations
 
-from ..crc import crc16_modbus as modbus_crc16
-from ..crc import crc16_voltronic as crc16
 from ..decoders.enums import (
     ACInputVoltageRange,
     BatteryType,
@@ -60,9 +58,6 @@ from ..protocols.agent_http import AGENT_STALE_THRESHOLD_MS
 from ..protocols.modbus_rtu import (
     UNIT_ID,
 )
-from ..protocols.modbus_rtu import (
-    read_smg2_snapshot as read_modbus_snapshot_async,
-)
 
 __all__ = [
     "ACInputVoltageRange",
@@ -78,7 +73,6 @@ __all__ = [
     "OutputSourcePrioritySetting",
     "ParallelMode",
     "UNIT_ID",
-    "crc16",
     "decode_ascii_response",
     "decode_direct_response",
     "decode_qbeqi",
@@ -95,10 +89,8 @@ __all__ = [
     "get_command_name_by_hex",
     "get_direct_data",
     "is_hex_string",
-    "modbus_crc16",
     "parse_device_status_bits_b10_b8",
     "parse_device_status_bits_b7_b0",
-    "read_modbus_snapshot_async",
     "set_battery_bulk_voltage",
     "set_battery_charge_current",
     "set_battery_float_voltage",
