@@ -350,3 +350,36 @@ class TestSnapshotEnumMigration:
         _neutralise_write(ent)
         ent._handle_coordinator_update()
         assert ent._attr_native_value == "Battery"
+
+
+class TestCapabilityGating:
+    """Phase C group 4: structurally-absent sensors aren't created."""
+
+    def test_modbus_drops_fabricated_qpigs(self):
+        from custom_components.dess_monitor_local import sensor as sm
+        bus = ds.DirectBusVoltageSensor(_Dev(), _Coord({}))
+        assert sm._supported(bus, "modbus") is False    # SMG has no bus voltage
+        assert sm._supported(bus, "voltronic") is True   # PI30 does
+
+    def test_modbus_keeps_real_field(self):
+        from custom_components.dess_monitor_local import sensor as sm
+        batv = ds.DirectBatteryVoltageSensor(_Dev(), _Coord({}))
+        assert sm._supported(batv, "modbus") is True
+
+    def test_qpiri_fabricated_dropped_real_kept(self):
+        from custom_components.dess_monitor_local import sensor as sm
+        rated = ds.DirectWattSensorBase(
+            _Dev(), _Coord({}), data_section="qpiri",
+            data_key="rated_output_active_power", name_suffix="x",
+        )
+        bulk = ds.DirectVoltageSensorBase(
+            _Dev(), _Coord({}), data_section="qpiri",
+            data_key="bulk_charging_voltage", name_suffix="x",
+        )
+        assert sm._supported(rated, "modbus") is False   # fabricated nameplate
+        assert sm._supported(bulk, "modbus") is True      # real config value
+
+    def test_non_typed_sensor_not_gated(self):
+        from custom_components.dess_monitor_local import sensor as sm
+        summary = ds.DirectInverterFaultSummarySensor(_Dev(), _Coord({}))
+        assert sm._supported(summary, "modbus") is True
