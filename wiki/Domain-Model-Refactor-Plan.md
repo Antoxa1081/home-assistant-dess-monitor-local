@@ -84,12 +84,8 @@ class DeviceStatus:
     charging_scc_active: bool | None = None
 
 @dataclass
-class DeviceSnapshot:
-    # identity
-    model: str | None = None
-    firmware: str | None = None
-    serial: str | None = None
-    # mode
+class Metrics:
+    """Live telemetry — the QPIGS + QMOD analogue (changes every poll)."""
     mode: OperatingMode | None = None
     # grid / output
     grid_voltage: float | None = None
@@ -122,17 +118,8 @@ class DeviceSnapshot:
     line_power_direction: ... | None = None
     mppt1_status: ... | None = None
     mppt2_status: ... | None = None
-    # device status flags
+    # parsed PI30 status bits
     status: DeviceStatus = field(default_factory=DeviceStatus)
-    # faults
-    warnings: set[WarningKey] = field(default_factory=set)
-    fault_code: int | None = None
-    warning_code: int | None = None
-    fault_description: str | None = None
-    # config / nameplate
-    ratings: Ratings = field(default_factory=Ratings)
-    # capabilities (drives entity creation)
-    capabilities: set[str] = field(default_factory=set)
 
     # derived (not stored)
     @property
@@ -142,7 +129,45 @@ class DeviceSnapshot:
     @property
     def battery_discharge_current(self) -> float | None:
         return None if self.battery_current is None else max(0.0, -self.battery_current)
+
+
+@dataclass
+class Faults:
+    """Warnings / faults — the QPIWS + QFWS analogue."""
+    warnings: set[WarningKey] = field(default_factory=set)
+    fault_code: int | None = None
+    warning_code: int | None = None
+    fault_description: str | None = None
+
+    @property
+    def has_fault(self) -> bool:
+        return bool(self.fault_code) or WarningKey.INVERTER_FAULT in self.warnings
+
+    @property
+    def any(self) -> bool:
+        return bool(self.warnings) or bool(self.fault_code) or bool(self.warning_code)
+
+
+@dataclass
+class DeviceSnapshot:
+    # identity
+    model: str | None = None
+    firmware: str | None = None
+    serial: str | None = None
+    # three semantic buckets (mirror the protocol command groups, neutral types)
+    metrics: Metrics = field(default_factory=Metrics)    # QPIGS + QMOD
+    ratings: Ratings = field(default_factory=Ratings)    # QPIRI
+    faults: Faults = field(default_factory=Faults)       # QPIWS + QFWS
+    # capabilities (drives entity creation)
+    capabilities: set[str] = field(default_factory=set)
+    # diagnostic escape hatch — raw protocol values for troubleshooting
+    raw: dict = field(default_factory=dict)
 ```
+
+Three semantic buckets keep **metric** sensors (live measurements) cleanly
+separated from **spec/nameplate** sensors (`ratings`, already DIAGNOSTIC
+category) and from faults — matching the existing entity grouping and enabling
+a later optimisation where `ratings` is polled less often than `metrics`.
 
 Capabilities (strings, set by each adapter): `pv2`, `dual_temp`, `mppt_temp`,
 `bms_soc`, `status_bits`, `directions`, `grid_power`, `parallel`, `dcdc_temp`.
@@ -220,11 +245,14 @@ only data shape.
 - Fault mapping tests: native faults → canonical `WarningKey` set.
 - Entity tests migrate alongside each group (read from a `DeviceSnapshot`).
 
-## Open questions
+## Resolved decisions
 
-- `battery_soc` for SMG-II is `None` — confirm the SoC estimator's
-  Coulomb-counting path handles "no device SoC" (it already supports
-  non-BMS modes; verify).
-- Keep a `raw: dict` escape hatch on the snapshot for diagnostics, or drop it?
-- Canonical `WarningKey` set: adopt the union of all current flags, or trim the
-  long agent-only diagnostic tail?
+- ✅ **Grouping:** three semantic buckets `metrics` / `ratings` / `faults`
+  (QPIGS+QMOD / QPIRI / QPIWS+QFWS analogues), keeping metric sensors separate
+  from device-spec sensors. Modbus maps 1:1 (register block 200→metrics,
+  300→ratings, 100→faults); enables polling ratings less often later.
+- ✅ **`battery_soc` = `None` for SMG-II** — the SoC estimator runs on Coulomb
+  counting (already supports non-BMS modes; verify the no-device-SoC path).
+- ✅ **Canonical `WarningKey`** = union of all current flags (PI30 bits + PI18
+  warn_* + agent warn_* + SMG-II codes), including the agent diagnostic tail.
+- ✅ **Keep the `raw: dict` escape hatch** on the snapshot for diagnostics.
