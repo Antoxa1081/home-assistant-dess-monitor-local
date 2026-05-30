@@ -32,6 +32,83 @@ def _i16(v: int) -> int:
     return v - 65536 if v >= 32768 else v
 
 
+# ---------------------------------------------------------------------------
+# Pure RTU framing — used by the TCP path below and by the EyBond transport
+# (which forwards these raw frames through the dongle's FC=4 channel).
+# ---------------------------------------------------------------------------
+def build_read_holding_frame(start: int, count: int, unit_id: int = UNIT_ID) -> bytes:
+    """Build a 'read holding registers' (func 0x03) RTU request frame."""
+    req = bytearray(
+        [unit_id & 0xFF, 3, (start >> 8) & 0xFF, start & 0xFF,
+         (count >> 8) & 0xFF, count & 0xFF]
+    )
+    crc = crc16_modbus(bytes(req))
+    req.append(crc & 0xFF)
+    req.append((crc >> 8) & 0xFF)
+    return bytes(req)
+
+
+def parse_read_holding_response(
+    resp: bytes, count: int, unit_id: int = UNIT_ID
+) -> list[int]:
+    """Parse a complete func-0x03 RTU response frame into register values."""
+    if len(resp) < 5:
+        raise ValueError("short modbus read response")
+    uid, func = resp[0], resp[1]
+    if uid != unit_id:
+        raise ValueError(f"unexpected unit id {uid}")
+    if func & 0x80:
+        raise ValueError(f"modbus exception {resp[2]}")
+    byte_count = resp[2]
+    end = 3 + byte_count
+    if len(resp) < end + 2:
+        raise ValueError("short modbus data")
+    data = resp[3:end]
+    recv_crc = resp[end] | (resp[end + 1] << 8)
+    if recv_crc != crc16_modbus(bytes(resp[:end])):
+        raise ValueError("modbus CRC mismatch")
+    regs: list[int] = []
+    for i in range(0, min(byte_count, count * 2), 2):
+        regs.append((data[i] << 8) | data[i + 1])
+    return regs
+
+
+def build_write_single_frame(
+    address: int, value: int, unit_id: int = UNIT_ID, func_code: int = 0x06
+) -> bytes:
+    """Build a single-register write (0x06) or 1-register multi-write (0x10)."""
+    req = bytearray(
+        [unit_id & 0xFF, func_code & 0xFF, (address >> 8) & 0xFF, address & 0xFF]
+    )
+    if func_code == 0x06:
+        req += bytes([(value >> 8) & 0xFF, value & 0xFF])
+    elif func_code == 0x10:
+        req += bytes([0x00, 0x01, 0x02, (value >> 8) & 0xFF, value & 0xFF])
+    else:
+        raise ValueError(f"unsupported func_code {func_code}")
+    crc = crc16_modbus(bytes(req))
+    req.append(crc & 0xFF)
+    req.append((crc >> 8) & 0xFF)
+    return bytes(req)
+
+
+def parse_write_response(resp: bytes, unit_id: int = UNIT_ID) -> dict:
+    """Validate a write echo/ack frame. Returns {"status": "OK"} or error."""
+    if len(resp) < 4:
+        return {"error": "short modbus write response"}
+    uid, func = resp[0], resp[1]
+    if func & 0x80:
+        return {"error": f"modbus exception {resp[2] if len(resp) > 2 else '?'}"}
+    if uid != unit_id:
+        return {"error": f"unexpected unit id {uid}"}
+    if len(resp) >= 8:
+        body = resp[:6]
+        recv_crc = resp[6] | (resp[7] << 8)
+        if recv_crc != crc16_modbus(bytes(body)):
+            return {"error": "modbus write CRC mismatch"}
+    return {"status": "OK", "func": func}
+
+
 async def read_modbus_block(
     host: str,
     port: int,
@@ -193,8 +270,21 @@ _OPERATION_MODES = {
 
 
 async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict, dict]:
-    """Read SMG-II's three register blocks: 100-115 (faults), 201-231
-    (sensors), 300-337 (config).
+    """Read SMG-II's three register blocks over Modbus RTU-over-TCP.
+
+    Thin wrapper over :func:`read_smg2_snapshot_via` with a TCP read_block.
+    """
+    async def read_block(start: int, count: int) -> list[int]:
+        return await read_modbus_block(host, port, start, count)
+
+    return await read_smg2_snapshot_via(read_block)
+
+
+async def read_smg2_snapshot_via(read_block) -> tuple[dict, dict, dict]:
+    """Read SMG-II's three register blocks via an arbitrary transport.
+
+    ``read_block(start, count) -> list[int]`` abstracts the transport so the
+    same register map works over TCP or through an EyBond dongle (FC=4).
 
     Returns (sensors, config, faults). Faults is a dict containing
     ``fault_code`` / ``warning_code`` (32-bit DWORD each) plus derived
@@ -208,7 +298,7 @@ async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict, dict]:
     # span in one shot is cheaper than two separate transactions and
     # captures any future fields in between.
     try:
-        block_100 = await read_modbus_block(host, port, 100, 16)
+        block_100 = await read_block(100, 16)
     except Exception:
         block_100 = None
 
@@ -226,7 +316,7 @@ async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict, dict]:
             ),
         }
 
-    block_200 = await read_modbus_block(host, port, 201, 31)
+    block_200 = await read_block(201, 31)
 
     def R200(addr: int) -> int:
         return block_200[addr - 201]
@@ -257,7 +347,7 @@ async def read_smg2_snapshot(host: str, port: int) -> tuple[dict, dict, dict]:
         "temp_inverter": R200(227),
     }
 
-    block_300 = await read_modbus_block(host, port, 300, 38, UNIT_ID, 30)
+    block_300 = await read_block(300, 38)
 
     def R300(addr: int) -> int:
         return block_300[addr - 300]

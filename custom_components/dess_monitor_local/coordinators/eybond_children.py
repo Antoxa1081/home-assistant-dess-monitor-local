@@ -10,14 +10,22 @@ from __future__ import annotations
 from ..api.protocols.eybond_discovery import DongleRecord, EybondRegistry
 from ..const import (
     DEFAULT_EYBOND_BROADCAST,
+    PROTOCOL_MODBUS,
     PROTOCOL_PI18,
     PROTOCOL_VOLTRONIC,
 )
 from .device_target import DeviceTarget
 
-# EyBond dongles forward Voltronic-family ASCII frames; only these protocols
-# are pollable through the dongle. Other protocols on a record are ignored.
-SUPPORTED_CHILD_PROTOCOLS = (PROTOCOL_VOLTRONIC, PROTOCOL_PI18)
+# Protocols whose frames the dongle can forward over FC=4: Voltronic/PI18
+# ASCII and Modbus RTU (SMG-II). Agent is HTTP-only and can't ride a dongle.
+SUPPORTED_CHILD_PROTOCOLS = (PROTOCOL_VOLTRONIC, PROTOCOL_PI18, PROTOCOL_MODBUS)
+
+# URI scheme per child protocol (all decoded by the matching adapter).
+_CHILD_SCHEME = {
+    PROTOCOL_PI18: "eybond-pi18",
+    PROTOCOL_MODBUS: "eybond-modbus",
+    PROTOCOL_VOLTRONIC: "eybond",
+}
 
 
 def child_id(rec: DongleRecord) -> str:
@@ -32,7 +40,7 @@ def build_child_uri(
     broadcast: str = DEFAULT_EYBOND_BROADCAST,
     announce_ip: str | None = None,
 ) -> str:
-    scheme = "eybond-pi18" if rec.protocol == PROTOCOL_PI18 else "eybond"
+    scheme = _CHILD_SCHEME.get(rec.protocol, "eybond")
     uri = f"{scheme}://{bind_host}:{bind_port}/{rec.devaddr}"
     params = [f"pn={rec.pn}"]
     if broadcast and broadcast != DEFAULT_EYBOND_BROADCAST:

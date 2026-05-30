@@ -6,7 +6,6 @@ from custom_components.dess_monitor_local.api.protocols.eybond_discovery import 
 from custom_components.dess_monitor_local.coordinators.eybond_children import (
     build_child_targets,
     build_child_uri,
-    child_id,
 )
 
 
@@ -32,6 +31,13 @@ class TestChildUri:
         uri = build_child_uri(rec, "0.0.0.0", 8899)
         assert uri.startswith("eybond-pi18://0.0.0.0:8899/1?pn=PN1")
 
+    def test_modbus_scheme(self):
+        reg = EybondRegistry()
+        rec = _rec(reg, "PN1", protocol="modbus", devaddr=3)
+        uri = build_child_uri(rec, "0.0.0.0", 8899)
+        # SMG-II Modbus over the dongle; devaddr doubles as the unit id.
+        assert uri.startswith("eybond-modbus://0.0.0.0:8899/3?pn=PN1")
+
     def test_custom_broadcast_and_announce_included(self):
         reg = EybondRegistry()
         rec = _rec(reg, "PN1", protocol="voltronic")
@@ -56,14 +62,16 @@ class TestChildTargets:
         _rec(reg, "PN_off", enabled=False, protocol="voltronic")
         _rec(reg, "PN_noproto", enabled=True, protocol=None)
         _rec(reg, "PN_modbus", enabled=True, protocol="modbus")
+        # Agent is HTTP-only — not forwardable through a dongle, so skipped.
+        _rec(reg, "PN_agent", enabled=True, protocol="agent")
 
         targets = build_child_targets(reg, "0.0.0.0", 8899)
         ids = {t.id for t in targets}
-        assert ids == {child_id(reg.get("PN_on"))}
-        t = targets[0]
-        assert t.id == "eybond:PN_on:1"
-        assert t.protocol == "voltronic"
-        assert t.name == "Inv A"
+        assert ids == {"eybond:PN_on:1", "eybond:PN_modbus:1"}
+        by_id = {t.id: t for t in targets}
+        assert by_id["eybond:PN_on:1"].protocol == "voltronic"
+        assert by_id["eybond:PN_on:1"].name == "Inv A"
+        assert by_id["eybond:PN_modbus:1"].protocol == "modbus"
 
     def test_name_falls_back_to_pn(self):
         reg = EybondRegistry()

@@ -66,9 +66,15 @@ from .const import (
 )
 
 # Per-child protocol options offered in the hub device-management UI.
-# "none" means unconfigured → the child is tracked but not polled.
+# "none" means unconfigured → the child is tracked but not polled. Agent is
+# excluded — it's HTTP-only and can't be forwarded through a dongle.
 _HUB_CHILD_PROTOCOL_NONE = "none"
-_HUB_CHILD_PROTOCOLS = (_HUB_CHILD_PROTOCOL_NONE, PROTOCOL_VOLTRONIC, PROTOCOL_PI18)
+_HUB_CHILD_PROTOCOLS = (
+    _HUB_CHILD_PROTOCOL_NONE,
+    PROTOCOL_VOLTRONIC,
+    PROTOCOL_PI18,
+    PROTOCOL_MODBUS,
+)
 
 # Protocols where the request/response framing carries a CRC and the
 # strict-CRC option is meaningful. Modbus has its own integrated check

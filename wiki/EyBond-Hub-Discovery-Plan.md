@@ -413,8 +413,12 @@ Reused the existing coordinator/entity stack via a per-child `DeviceTarget`
   child id (`eybond:<pn>:<devaddr>`), commands route to the child URI, which
   carries `?pn=<PN>` so the dispatcher/adapter reach the right dongle on the
   shared listener (`_parse_pn_from_uri`)
-- `build_child_targets` turns enabled, protocol-assigned records into targets
-  (Voltronic/PI18 only — the protocols the dongle forwards)
+- `build_child_targets` turns enabled, protocol-assigned records into targets.
+  Supported child protocols: Voltronic, PI18, and Modbus/SMG-II. Modbus rides
+  the dongle via a new `eybond-modbus://` scheme — the ModbusAdapter is now
+  transport-agnostic (`read_smg2_snapshot_via` + RTU framing helpers), sending
+  RTU frames through the dongle's FC=4 channel; the child `devaddr` doubles as
+  the Modbus unit id. (Agent is HTTP-only and excluded.)
 - one HA device per child under the hub entry; platforms read protocol
   per-item so a hub can mix Voltronic/PI18 children
 - legacy single-device entries keep `id == uri`, so existing entity

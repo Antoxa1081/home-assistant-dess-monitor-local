@@ -1,7 +1,24 @@
 """Tests for the SMG-II Modbus pure helpers (api/protocols/modbus_rtu.py):
-signed-register conversion, URI parsing, and the QPIGS/QPIRI projections."""
+signed-register conversion, URI parsing, and the QPIGS/QPIRI projections.
 
+Also covers the pure RTU framing helpers and the EyBond-modbus transport
+(SMG-II forwarded through a dongle's FC=4 channel)."""
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+from custom_components.dess_monitor_local.api.adapters import modbus as modadapter
+from custom_components.dess_monitor_local.api.crc import crc16_modbus
 from custom_components.dess_monitor_local.api.protocols import modbus_rtu
+
+
+def _rtu_read_response(unit_id: int, regs: list[int]) -> bytes:
+    body = bytearray([unit_id, 3, len(regs) * 2])
+    for r in regs:
+        body += bytes([(r >> 8) & 0xFF, r & 0xFF])
+    crc = crc16_modbus(bytes(body))
+    return bytes(body) + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 
 class TestI16:
@@ -104,3 +121,74 @@ class TestSmg2ToQpiri:
         d = modbus_rtu.smg2_to_qpiri(_CONFIG)
         # 0 -> UtilityFirst per _OUTPUT_PRIORITY_MAP.
         assert d["output_source_priority"] == "UtilityFirst"
+
+
+class TestRtuFraming:
+    def test_read_frame_fields_and_crc(self):
+        frame = modbus_rtu.build_read_holding_frame(201, 31, unit_id=1)
+        assert frame[0] == 1 and frame[1] == 3
+        # start 201 = 0x00C9, count 31 = 0x001F (big-endian).
+        assert frame[2:6] == bytes([0x00, 0xC9, 0x00, 0x1F])
+        assert crc16_modbus(frame[:-2]) == (frame[-2] | (frame[-1] << 8))
+
+    def test_parse_read_response_roundtrip(self):
+        resp = _rtu_read_response(1, [0x1234, 0x5678])
+        assert modbus_rtu.parse_read_holding_response(resp, 2, unit_id=1) == [
+            0x1234, 0x5678,
+        ]
+
+    def test_parse_read_crc_mismatch(self):
+        resp = bytearray(_rtu_read_response(1, [0x0001]))
+        resp[-1] ^= 0xFF  # corrupt CRC
+        with pytest.raises(ValueError):
+            modbus_rtu.parse_read_holding_response(bytes(resp), 1, unit_id=1)
+
+    def test_parse_read_exception_byte(self):
+        # func | 0x80 marks a Modbus exception response.
+        resp = bytes([1, 0x83, 2, 0x00, 0x00])
+        with pytest.raises(ValueError):
+            modbus_rtu.parse_read_holding_response(resp, 1, unit_id=1)
+
+    def test_write_frame_echo_ok(self):
+        frame = modbus_rtu.build_write_single_frame(301, 2, unit_id=1, func_code=0x06)
+        assert frame[1] == 0x06
+        # A 0x06 write echoes the request; parsing the echo is OK.
+        assert modbus_rtu.parse_write_response(frame, unit_id=1)["status"] == "OK"
+
+    def test_write_exception(self):
+        resp = bytes([1, 0x86, 4, 0x00, 0x00])
+        assert "error" in modbus_rtu.parse_write_response(resp, unit_id=1)
+
+
+class TestEybondModbusTransport:
+    def test_unit_id_from_uri_devaddr(self):
+        t = modadapter._EybondModbusTransport(
+            "eybond-modbus://0.0.0.0:8899/3?pn=PNX"
+        )
+        assert t.unit_id == 3
+
+    def test_read_block_sends_frame_and_parses(self):
+        captured = {}
+
+        async def fake_send(uri, frame, timeout, context="", pn=None):
+            captured["frame"] = frame
+            captured["uri"] = uri
+            return _rtu_read_response(3, [10, 20])
+
+        t = modadapter._EybondModbusTransport(
+            "eybond-modbus://0.0.0.0:8899/3?pn=PNX"
+        )
+        with patch.object(modadapter, "send_eybond_bytes", side_effect=fake_send):
+            regs = asyncio.run(t.read_block(201, 2))
+        assert regs == [10, 20]
+        # Outgoing frame is a func-3 read addressed to unit id 3.
+        assert captured["frame"][0] == 3 and captured["frame"][1] == 3
+
+    def test_read_block_no_response_raises(self):
+        async def fake_send(uri, frame, timeout, context="", pn=None):
+            return None
+
+        t = modadapter._EybondModbusTransport("eybond-modbus://0.0.0.0:8899/1?pn=P")
+        with patch.object(modadapter, "send_eybond_bytes", side_effect=fake_send):
+            with pytest.raises(ConnectionError):
+                asyncio.run(t.read_block(201, 2))

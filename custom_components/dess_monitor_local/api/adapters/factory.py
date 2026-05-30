@@ -13,7 +13,8 @@ def get_adapter(device_uri: str, timeout: float = 30.0, strict_crc: bool = False
     if device_uri.startswith("agent://"):
         return AgentAdapter(device_uri, timeout, strict_crc)
 
-    if device_uri.startswith("modbus://"):
+    # SMG-II Modbus, either over TCP or forwarded through an EyBond dongle.
+    if device_uri.startswith(("modbus://", "eybond-modbus://")):
         return ModbusAdapter(device_uri, timeout, strict_crc)
 
     if device_uri.startswith(("pi18://", "pi18-serial://")):
