@@ -234,10 +234,11 @@ class TestDecodeGs:
         assert d["battery_voltage"] == "26.70"
         assert d["battery_discharge_current"] == "00022"
         assert d["battery_charging_current"] == "000"
-        # PI30-compat status bit strings are always present.
-        assert "device_status_bits_b7_b0" in d
 
-    def test_no_fabricated_bus_voltage(self):
-        # Phase D: PI18 has no bus-voltage field; it must not be fabricated.
+    def test_no_fabricated_bus_voltage_or_status_bits(self):
+        # Phase D: PI18 has neither a bus-voltage nor PI30 status-bit field;
+        # neither may be fabricated (the PI30 status sensors go unavailable).
         d = pi18._decode_gs(["2393", "500", "2306", "499"])
         assert "bus_voltage" not in d
+        assert "device_status_bits_b7_b0" not in d
+        assert "device_status_bits_b10_b8" not in d

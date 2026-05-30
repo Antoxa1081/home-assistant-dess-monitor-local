@@ -160,12 +160,6 @@ def _decode_gs(tokens: list[str]) -> dict[str, Any]:
     pv2_v = pv2_v_int / 10.0
     pv2_input_current = pv2_p_int / pv2_v if pv2_v else 0.0
 
-    # PI18 status bits aren't directly exposed; mirror SMG-II's "running,
-    # AC-charging" baseline so any sensor that reads them gets a constant
-    # rather than KeyError.
-    status_b7_b0 = "00010001"
-    status_b10_b8 = "010"
-
     return {
         "grid_voltage": f"{_safe_int(raw['grid_voltage']) / 10.0:.1f}",
         "grid_frequency": f"{_safe_int(raw['grid_frequency']) / 10.0:.1f}",
@@ -184,11 +178,10 @@ def _decode_gs(tokens: list[str]) -> dict[str, Any]:
         "pv_input_voltage": f"{pv_v:.1f}",
         "scc_battery_voltage": f"{_safe_int(raw['scc_battery_voltage']) / 10.0:.2f}",
         "battery_discharge_current": f"{_safe_int(raw['battery_discharge_current']):05d}",
-        "device_status_bits_b7_b0": status_b7_b0,
-        "battery_voltage_offset": "00",
-        "eeprom_version": "00",
+        # No device_status_bits_*: PI18 has no PI30 status-bit field (was a
+        # fabricated "running, AC-charging" baseline). The PI30 status sensors
+        # go unavailable for PI18, like SMG-II.
         "pv_charging_power": f"{pv_p_int:05d}",
-        "device_status_bits_b10_b8": status_b10_b8,
         # PI18-only fields. Absent in PI30 responses — the corresponding
         # sensors are only wired up when the user has chosen PI18 in the
         # config flow, so PI30 deployments don't see ghost entities.
