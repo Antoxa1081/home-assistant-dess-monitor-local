@@ -184,3 +184,18 @@ class TestSerialization:
         assert rec.pn == "X"
         assert rec.status is DongleStatus.DISCONNECTED
         assert rec.enabled is True
+
+    def test_put_and_legacy_id_round_trip(self):
+        reg = EybondRegistry(now=_Clock())
+        reg.put(
+            DongleRecord(
+                pn="PN_mig", enabled=True, protocol="voltronic", devaddr=2,
+                legacy_id="eybond://0.0.0.0:8899/2",
+            )
+        )
+        reg2 = EybondRegistry(now=_Clock())
+        reg2.load(reg.to_dict())
+        rec = reg2.get("PN_mig")
+        assert rec.legacy_id == "eybond://0.0.0.0:8899/2"
+        assert rec.enabled is True
+        assert rec.devaddr == 2

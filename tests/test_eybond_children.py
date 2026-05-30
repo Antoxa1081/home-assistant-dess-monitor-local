@@ -83,3 +83,13 @@ class TestChildTargets:
         reg = EybondRegistry()
         _rec(reg, "PN1", enabled=False, protocol="voltronic")
         assert build_child_targets(reg, "0.0.0.0", 8899) == []
+
+    def test_legacy_id_overrides_target_id(self):
+        # A migrated child keeps its original URI as id so unique_ids/history
+        # survive; the poll uri still carries the live pn routing.
+        reg = EybondRegistry()
+        rec = _rec(reg, "PN_mig", enabled=True, protocol="voltronic")
+        rec.legacy_id = "eybond://0.0.0.0:8899/1?broadcast=10.0.0.255"
+        targets = build_child_targets(reg, "0.0.0.0", 8899)
+        assert targets[0].id == "eybond://0.0.0.0:8899/1?broadcast=10.0.0.255"
+        assert "pn=PN_mig" in targets[0].uri  # routing still by pn

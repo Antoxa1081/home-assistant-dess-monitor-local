@@ -20,21 +20,34 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .api.protocols.eybond_discovery import EybondRegistry
+from .api.protocols.eybond_discovery import (
+    DongleRecord,
+    DongleStatus,
+    EybondRegistry,
+)
 from .api.protocols.eybond_dongle import (
     get_eybond_manager,
+    parse_eybond_uri,
     shutdown_eybond_manager,
 )
 from .const import (
+    CONF_DEVICE,
+    CONF_ENTRY_KIND,
     CONF_EYBOND_ANNOUNCE_IP,
     CONF_EYBOND_BIND_HOST,
     CONF_EYBOND_BIND_PORT,
     CONF_EYBOND_BROADCAST,
+    CONF_HUB_REVISION,
     CONF_NAME,
+    CONF_UPDATE_INTERVAL,
     DEFAULT_EYBOND_BIND_HOST,
     DEFAULT_EYBOND_BIND_PORT,
     DEFAULT_EYBOND_BROADCAST,
+    DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    ENTRY_KIND_EYBOND_HUB,
+    PROTOCOL_PI18,
+    PROTOCOL_VOLTRONIC,
 )
 from .coordinators.direct_coordinator import DirectCoordinator
 from .coordinators.eybond_children import build_child_targets
@@ -161,3 +174,64 @@ async def async_unload_eybond_hub(hass: HomeAssistant, entry: ConfigEntry) -> No
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime is not None:
         await runtime.stop()
+
+
+async def async_migrate_legacy_to_hub(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> dict | str:
+    """Convert a legacy single-device ``eybond://`` entry into a hub entry.
+
+    Returns the new options dict on success (the caller applies it via the
+    options flow, which reloads the entry as a hub), or an error reason
+    string on failure. The connected dongle's PN is captured from the live
+    session so the migrated child is fully configured; the original device
+    URI is stored as the child's ``legacy_id`` so entity unique_ids — and
+    therefore history — are preserved.
+    """
+    opts = entry.options
+    device = opts.get(CONF_DEVICE, "") or ""
+    if not (device.startswith("eybond://") or device.startswith("eybond-pi18://")):
+        return "not_eybond"
+
+    is_pi18 = device.startswith("eybond-pi18://")
+    protocol = PROTOCOL_PI18 if is_pi18 else PROTOCOL_VOLTRONIC
+    bind_host, bind_port, devaddr, broadcast, announce_ip = parse_eybond_uri(device)
+
+    # Need the connected dongle's PN to create a fully-configured child.
+    manager = await get_eybond_manager(bind_host, bind_port, broadcast, announce_ip)
+    pns = manager.identified_pns
+    if not pns:
+        return "dongle_offline"
+    pn = pns[0]
+
+    name = entry.data.get(CONF_NAME) or entry.title or "EyBond"
+
+    registry = EybondRegistry()
+    registry.put(
+        DongleRecord(
+            pn=pn,
+            name=name,
+            enabled=True,
+            protocol=protocol,
+            devaddr=devaddr,
+            legacy_id=device,  # preserve original unique_ids / history
+            status=DongleStatus.CONNECTED,
+        )
+    )
+    await _store(hass, entry.entry_id).async_save(registry.to_dict())
+
+    _LOGGER.info(
+        "EyBond: migrated legacy entry '%s' (%s) to hub mode, child PN=%s",
+        name, device, pn,
+    )
+    return {
+        CONF_ENTRY_KIND: ENTRY_KIND_EYBOND_HUB,
+        CONF_EYBOND_BIND_HOST: bind_host,
+        CONF_EYBOND_BIND_PORT: bind_port,
+        CONF_EYBOND_BROADCAST: broadcast,
+        CONF_EYBOND_ANNOUNCE_IP: announce_ip or "",
+        CONF_UPDATE_INTERVAL: int(
+            opts.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        ),
+        CONF_HUB_REVISION: int(opts.get(CONF_HUB_REVISION, 0)) + 1,
+    }

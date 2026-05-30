@@ -66,7 +66,8 @@ def build_child_targets(
             continue
         targets.append(
             DeviceTarget(
-                id=child_id(rec),
+                # legacy_id preserves a migrated entry's original unique_ids.
+                id=rec.legacy_id or child_id(rec),
                 uri=build_child_uri(
                     rec, bind_host, bind_port, broadcast, announce_ip
                 ),

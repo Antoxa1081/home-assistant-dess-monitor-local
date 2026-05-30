@@ -443,8 +443,10 @@ before any child is configured. A one-shot persistent notification fires when
 a brand-new, still-unconfigured dongle appears, nudging the user to assign a
 protocol (seeded from the persisted registry so restarts don't re-notify).
 
-Remaining Phase 5 niceties (force rediscovery, remove stale records, protocol
-auto-probe) are still open.
+Stale-record removal is implemented: the device-edit step has a **Remove this
+device** option that drops a gone dongle from the registry (it is re-discovered
+if it comes back online). Remaining Phase 5 niceties (force rediscovery,
+protocol auto-probe) are still open.
 
 ### Phase 4: Child device polling
 
@@ -467,14 +469,26 @@ Deliverables:
 - choose protocol
 - set `devaddr`
 
-### Phase 6: Migration helper
+### Phase 6: Migration helper — ✅ DONE
 
-Optional final phase.
+Opt-in conversion of a legacy single-device `eybond://` / `eybond-pi18://`
+entry into a hub entry. A legacy EyBond entry's options flow now shows a menu
+(**Edit connection** / **Convert to EyBond hub**); the conversion
+(`eybond_hub.async_migrate_legacy_to_hub`):
 
-Deliverables:
+- parses the legacy device URI for bind host/port, broadcast, announce IP,
+  devaddr, and protocol (voltronic/pi18)
+- captures the connected dongle's PN from the live session (aborts with
+  `dongle_offline` if it isn't online — the PN is needed to configure the
+  child)
+- writes the hub Store with one enabled, fully-configured child, storing the
+  original URI as `legacy_id` so the migrated child keeps its **entity
+  unique_ids and history** (`build_child_targets` uses `legacy_id` as the
+  target id when set)
+- returns the hub options; applying them reloads the entry as a hub
 
-- import legacy EyBond entries into hub mode
-- preserve old behavior where migration is not performed
+Migration is **opt-in** — legacy entries that aren't converted keep working
+unchanged.
 
 ## Testing Plan
 
@@ -517,9 +531,19 @@ cannot be implemented cleanly.
   counter live in options. Editing a device bumps the revision to trigger a
   reload.
 - ✅ Should UDP announce run continuously, or only while there are unidentified
-  or missing configured dongles? — **Decided in Phase 1: continuous.** Simpler
-  and safer; lets new dongles attach at any time. Can be revisited if the
-  broadcast traffic ever proves problematic.
+  or missing configured dongles? — **Revised after field testing: gated, NOT
+  continuous.** Phase 1 chose continuous, but field logs showed every
+  `set>server` broadcast makes an already-connected dongle reconnect — so a
+  continuous announce flaps connected dongles every ~5s. The announcer now
+  broadcasts only while an expected dongle is missing (`_should_announce`),
+  re-evaluating every 1s but rate-limiting sends to 5s; once all expected
+  dongles are connected it pauses, and sessions stay up via the per-session
+  heartbeat. See `eybond_dongle.py`. **Known limit:** multiple dongles on one
+  shared listener still interfere (the broadcast can't target a single dongle)
+  and flap under Docker-Desktop-on-Windows NAT; single-dongle-per-listener is
+  rock-solid. A clean multi-dongle design (discovery port + per-dongle port +
+  unicast `set>server`) needs real dongle IPs (Linux host/bridged networking),
+  not Windows-Docker bridge NAT.
 - ✅ Should newly discovered devices default to `enabled = false` until
   explicitly configured? — **Decided in Phase 2: yes.** A freshly discovered
   `DongleRecord` is `enabled = False` with `protocol = None`, so unconfigured

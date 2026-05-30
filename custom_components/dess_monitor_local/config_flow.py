@@ -718,7 +718,34 @@ class OptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         self._load_defaults()
+        # Legacy EyBond entries can be converted to a hub (discovery + multi
+        # dongle + management UI). Offer it alongside plain editing.
+        if self._transport == TRANSPORT_EYBOND:
+            return self.async_show_menu(
+                step_id="init", menu_options=["edit", "migrate_hub"]
+            )
         return await self.async_step_protocol()
+
+    async def async_step_edit(self, user_input=None):
+        return await self.async_step_protocol()
+
+    async def async_step_migrate_hub(self, user_input=None):
+        """Convert this legacy eybond entry into a hub entry (opt-in)."""
+        if user_input is not None:
+            from . import eybond_hub
+
+            result = await eybond_hub.async_migrate_legacy_to_hub(
+                self.hass, self._config_entry
+            )
+            if isinstance(result, str):
+                return self.async_abort(reason=result)
+            # Applying the hub options reloads the entry as a hub.
+            return self.async_create_entry(title="", data=result)
+
+        return self.async_show_form(
+            step_id="migrate_hub",
+            data_schema=vol.Schema({}),
+        )
 
     async def async_step_protocol(self, user_input=None):
         if user_input is not None:
@@ -913,17 +940,23 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="no_devices")
 
         if user_input is not None:
-            enabled = bool(user_input.get("enabled", False))
-            name = (user_input.get(CONF_NAME) or "").strip()
-            protocol = user_input.get(CONF_PROTOCOL, _HUB_CHILD_PROTOCOL_NONE)
-            devaddr = int(user_input.get(CONF_EYBOND_DEVADDR, rec.devaddr))
-            registry.set_name(pn, name)
-            registry.set_devaddr(pn, devaddr)
-            registry.set_protocol(
-                pn,
-                None if protocol == _HUB_CHILD_PROTOCOL_NONE else protocol,
-            )
-            registry.set_enabled(pn, enabled)
+            if user_input.get("remove"):
+                # Drop a stale/gone dongle from the registry. If it's still
+                # physically present it will simply be re-discovered (as a
+                # fresh unconfigured record) on its next heartbeat.
+                registry.remove(pn)
+            else:
+                enabled = bool(user_input.get("enabled", False))
+                name = (user_input.get(CONF_NAME) or "").strip()
+                protocol = user_input.get(CONF_PROTOCOL, _HUB_CHILD_PROTOCOL_NONE)
+                devaddr = int(user_input.get(CONF_EYBOND_DEVADDR, rec.devaddr))
+                registry.set_name(pn, name)
+                registry.set_devaddr(pn, devaddr)
+                registry.set_protocol(
+                    pn,
+                    None if protocol == _HUB_CHILD_PROTOCOL_NONE else protocol,
+                )
+                registry.set_enabled(pn, enabled)
             # Persist before the reload so setup re-reads the new config.
             if runtime is not None:
                 await runtime.async_save(force=True)
@@ -951,6 +984,9 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
                         min=1, max=16, step=1, mode=NumberSelectorMode.BOX
                     )
                 ),
+                # Remove a stale/gone dongle from discovery. Other fields are
+                # ignored when this is set.
+                vol.Optional("remove", default=False): BooleanSelector(),
             }
         )
         return self.async_show_form(

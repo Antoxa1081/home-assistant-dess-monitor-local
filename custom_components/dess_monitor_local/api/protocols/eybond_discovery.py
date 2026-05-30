@@ -50,6 +50,10 @@ class DongleRecord:
     first_seen: str = ""
     last_seen: str = ""
     model_hint: str = ""
+    # When set, overrides the derived child id (``eybond:<pn>:<devaddr>``) for
+    # the poll target — used by legacy→hub migration to keep the original
+    # entity unique_ids/device identifiers so history is preserved.
+    legacy_id: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -152,6 +156,11 @@ class EybondRegistry:
 
     def remove(self, pn: str) -> DongleRecord | None:
         return self._records.pop(pn, None)
+
+    def put(self, record: DongleRecord) -> DongleRecord:
+        """Insert/replace a fully-formed record (used by migration)."""
+        self._records[record.pn] = record
+        return record
 
     # -- queries ----------------------------------------------------------
     def get(self, pn: str) -> DongleRecord | None:
