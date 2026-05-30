@@ -298,42 +298,161 @@ Possible future migration helper:
 
 ## Implementation Phases
 
-### Phase 1: Multi-session foundation
+### Phase 1: Multi-session foundation — ✅ DONE
 
-Implement multi-session EyBond manager with routing by `PN`.
+Implemented the multi-session EyBond manager with routing by `PN` in
+`api/protocols/eybond_dongle.py`. The entity/HA layer is unchanged.
 
-Deliverables:
+Delivered:
 
-- multiple TCP sessions on one port
-- identify dongles by `PN`
-- internal API:
+- multiple TCP sessions coexist on one listener (`_sessions: set[_Session]`)
+- a new connection never evicts an existing one
+- dongles identified by `PN` from the heartbeat → `_sessions_by_pn`
+- per-PN readiness gating (`_ready_by_pn`) plus a legacy `_any_ready` gate
+- per-session heartbeat task (`_Session.hb_task`)
+- continuous UDP announcer (no longer stopped after the first connection)
+- same-PN reconnect evicts the stale session
+- disconnect of one dongle does not affect others
+- `send_frame(devaddr, v_frame, timeout, context, pn=None)` — routes by PN;
+  `pn=None` preserves legacy single-dongle behaviour
+- `pn` threaded through `send_eybond_bytes` / `send_eybond_voltronic` /
+  `send_eybond_set_command` so later phases can target a specific dongle
+
+Internal routing entry (PN-aware):
 
 ```python
-send_voltronic(pn, devaddr, command, timeout)
+await send_eybond_voltronic(device, command, timeout, protocol, pn=<PN>)
 ```
 
-This phase should not yet change the entity model.
+Implementation notes / decisions:
 
-### Phase 2: Discovery registry
+- `_Session` is `@dataclass(eq=False)` so instances are identity-hashable
+  (usable as `set` elements / dict values).
+- Announcer runs continuously (the simpler, safer option from the open
+  questions below) — additional dongles can attach at any time.
+- Tests: `tests/test_eybond_dongle.py::TestMultiSession` drives the manager
+  with in-memory fake `StreamReader`/`StreamWriter` (no real socket) and
+  covers: PN learned from heartbeat, two dongles coexist without eviction,
+  routing targets the correct PN, disconnect isolation, same-PN reconnect
+  eviction, legacy `pn=None` routing, and no-dongle timeout.
 
-Add discovery storage and lifecycle tracking.
+This phase does not change the entity model.
 
-Deliverables:
+### Phase 2: Discovery registry — ✅ DONE
+
+Added a per-hub discovery registry in
+`api/protocols/eybond_discovery.py` (`DongleStatus`, `DongleRecord`,
+`EybondRegistry`). Pure module — no HA imports, injectable clock — so it
+unit-tests without `hass` and serializes straight into a store in Phase 3.
+
+Delivered:
+
+- discovered `PN` records (`DongleRecord`: `pn`, `name`, `enabled`,
+  `protocol`, `devaddr`, `status`, `peer`, `first_seen`, `last_seen`,
+  `model_hint`)
+- `first_seen` / `last_seen` lifecycle timestamps (ISO-8601 strings)
+- session status (`connected` / `disconnected`)
+- enable/disable + protocol/devaddr/name configuration setters (records may
+  be pre-configured before a dongle first connects)
+- `enabled_pns()` / `connected_pns()` queries (foundation for Phase 4 polling)
+- `to_dict()` / `load()` JSON round-trip for the Phase 3 store
+
+Manager wiring (`EybondManager`):
+
+- owns `self.registry: EybondRegistry` (one per hub)
+- `record_seen(pn, peer)` on identify and on every subsequent heartbeat
+  (keeps `last_seen` current); preserves user config on existing records
+- `mark_disconnected(pn)` on session teardown — **skipped** when the PN was
+  already re-claimed by a same-PN reconnect (record stays `connected`)
+- `discovered` property exposes `registry.all()`
+
+Defaults chosen: newly discovered dongles are `enabled = False` with
+`protocol = None` (unconfigured / not polled) — see resolved open question
+below. Tests: `tests/test_eybond_discovery.py` (registry unit tests) and
+`tests/test_eybond_dongle.py::TestDiscoveryIntegration` (manager feeds the
+registry across connect / disconnect / same-PN reconnect).
+
+This phase does not change the entity model.
+
+Original deliverables (all met):
 
 - discovered `PN` records
 - `last_seen`
 - session status
 - enabled/disabled state support
 
-### Phase 3: Hub config entry
+### Phase 3: Hub config entry — ✅ DONE
 
-Add a dedicated EyBond hub config flow.
+Added a dedicated EyBond hub config entry alongside the legacy single-device
+flow. The config flow's first step is now a menu: **Single inverter**
+(unchanged 4-step flow) or **EyBond hub**.
 
-Deliverables:
+Delivered:
 
-- create hub entry
-- configure listener
-- expose discovered devices in options
+- `CONF_ENTRY_KIND` marks an entry as `device` (default/legacy) or
+  `eybond_hub`; `__init__.async_setup_entry` branches on it
+- hub creation step collects name + listener config (bind host/port,
+  broadcast, announce IP, update interval)
+- `eybond_hub.py` runtime: loads the discovery registry from a dedicated
+  `Store` (`{DOMAIN}.eybond_hub.<entry_id>`), starts the listener with that
+  registry (`get_eybond_manager(..., registry=...)`), persists periodically
+  + on unload, and shuts down only its own listener on unload
+  (`shutdown_eybond_manager`)
+- stale `connected` statuses are cleared on load
+  (`EybondRegistry.reset_connection_state`)
+- hub options flow exposes discovered devices and listener settings
+
+Translations added (en/ru + strings.json) for the menu and all new steps.
+
+### Phase 4: Child device polling — ✅ DONE
+
+Reused the existing coordinator/entity stack via a per-child `DeviceTarget`
+(id / uri / protocol / name):
+
+- `DirectCoordinator` accepts explicit targets; data is keyed by the stable
+  child id (`eybond:<pn>:<devaddr>`), commands route to the child URI, which
+  carries `?pn=<PN>` so the dispatcher/adapter reach the right dongle on the
+  shared listener (`_parse_pn_from_uri`)
+- `build_child_targets` turns enabled, protocol-assigned records into targets.
+  Supported child protocols: Voltronic, PI18, and Modbus/SMG-II. Modbus rides
+  the dongle via a new `eybond-modbus://` scheme — the ModbusAdapter is now
+  transport-agnostic (`read_smg2_snapshot_via` + RTU framing helpers), sending
+  RTU frames through the dongle's FC=4 channel; the child `devaddr` doubles as
+  the Modbus unit id. (Agent is HTTP-only and excluded.)
+- one HA device per child under the hub entry; platforms read protocol
+  per-item so a hub can mix Voltronic/PI18 children
+- legacy single-device entries keep `id == uri`, so existing entity
+  `unique_id`s/device identifiers are unchanged
+
+### Phase 5 (partial): Device management UI — ✅ core done
+
+The hub options flow already lets the user, per discovered dongle:
+
+- enable/disable
+- rename
+- choose protocol (`none` = discovered-but-not-polled, voltronic, pi18)
+- set `devaddr`
+
+Edits write the registry → save the Store → bump `CONF_HUB_REVISION` in
+options, which reloads the entry and rebuilds child devices/entities.
+
+Hub visibility: the hub entry always creates a hub device with a
+`Discovered dongles` diagnostic sensor (state = count, attributes = per-dongle
+PN/status/last_seen/enabled/protocol) so the integration is visibly working
+before any child is configured. A one-shot persistent notification fires when
+a brand-new, still-unconfigured dongle appears, nudging the user to assign a
+protocol (seeded from the persisted registry so restarts don't re-notify).
+
+Stale-record removal is implemented: the device-edit step has a **Remove this
+device** option that drops a gone dongle from the registry (it is re-discovered
+if it comes back online).
+
+Force rediscovery is implemented: a **Scan for new dongles** option in the hub
+options opens a ~60s window (`EybondManager.force_rediscovery` →
+`_force_announce_until`) where the announcer broadcasts regardless of
+connection state, so brand-new dongles attach and get discovered. It briefly
+flaps connected dongles (the broadcast can't target one), acceptable for an
+explicit scan. Remaining Phase 5 nicety (protocol auto-probe) is still open.
 
 ### Phase 4: Child device polling
 
@@ -356,14 +475,26 @@ Deliverables:
 - choose protocol
 - set `devaddr`
 
-### Phase 6: Migration helper
+### Phase 6: Migration helper — ✅ DONE
 
-Optional final phase.
+Opt-in conversion of a legacy single-device `eybond://` / `eybond-pi18://`
+entry into a hub entry. A legacy EyBond entry's options flow now shows a menu
+(**Edit connection** / **Convert to EyBond hub**); the conversion
+(`eybond_hub.async_migrate_legacy_to_hub`):
 
-Deliverables:
+- parses the legacy device URI for bind host/port, broadcast, announce IP,
+  devaddr, and protocol (voltronic/pi18)
+- captures the connected dongle's PN from the live session (aborts with
+  `dongle_offline` if it isn't online — the PN is needed to configure the
+  child)
+- writes the hub Store with one enabled, fully-configured child, storing the
+  original URI as `legacy_id` so the migrated child keeps its **entity
+  unique_ids and history** (`build_child_targets` uses `legacy_id` as the
+  target id when set)
+- returns the hub options; applying them reloads the entry as a hub
 
-- import legacy EyBond entries into hub mode
-- preserve old behavior where migration is not performed
+Migration is **opt-in** — legacy entries that aren't converted keep working
+unchanged.
 
 ## Testing Plan
 
@@ -399,11 +530,29 @@ cannot be implemented cleanly.
 
 ## Open Questions
 
-- Where exactly should child-device discovery state live: `options` or a
-  dedicated storage file?
-- Should UDP announce run continuously, or only while there are unidentified or
-  missing configured dongles?
-- Should newly discovered devices default to `enabled = false` until explicitly
-  configured?
+- ✅ Where exactly should child-device discovery state live: `options` or a
+  dedicated storage file? — **Decided in Phase 3: dedicated `Store`.** The
+  registry (lifecycle + per-device config) lives in
+  `{DOMAIN}.eybond_hub.<entry_id>`; only listener settings + a revision
+  counter live in options. Editing a device bumps the revision to trigger a
+  reload.
+- ✅ Should UDP announce run continuously, or only while there are unidentified
+  or missing configured dongles? — **Revised after field testing: gated, NOT
+  continuous.** Phase 1 chose continuous, but field logs showed every
+  `set>server` broadcast makes an already-connected dongle reconnect — so a
+  continuous announce flaps connected dongles every ~5s. The announcer now
+  broadcasts only while an expected dongle is missing (`_should_announce`),
+  re-evaluating every 1s but rate-limiting sends to 5s; once all expected
+  dongles are connected it pauses, and sessions stay up via the per-session
+  heartbeat. See `eybond_dongle.py`. **Known limit:** multiple dongles on one
+  shared listener still interfere (the broadcast can't target a single dongle)
+  and flap under Docker-Desktop-on-Windows NAT; single-dongle-per-listener is
+  rock-solid. A clean multi-dongle design (discovery port + per-dongle port +
+  unicast `set>server`) needs real dongle IPs (Linux host/bridged networking),
+  not Windows-Docker bridge NAT.
+- ✅ Should newly discovered devices default to `enabled = false` until
+  explicitly configured? — **Decided in Phase 2: yes.** A freshly discovered
+  `DongleRecord` is `enabled = False` with `protocol = None`, so unconfigured
+  dongles are tracked but not polled and create no noisy entities.
 - Do we want protocol auto-probe later as an optional action, while keeping
   manual assignment as the default?

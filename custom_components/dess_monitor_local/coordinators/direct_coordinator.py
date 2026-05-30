@@ -11,11 +11,15 @@ from homeassistant.helpers.update_coordinator import (
 from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
+    CONF_NAME,
+    CONF_PROTOCOL,
     CONF_STRICT_CRC,
     CONF_UPDATE_INTERVAL,
     DEFAULT_STRICT_CRC,
     DEFAULT_UPDATE_INTERVAL,
+    PROTOCOL_VOLTRONIC,
 )
+from custom_components.dess_monitor_local.coordinators.device_target import DeviceTarget
 from custom_components.dess_monitor_local.coordinators.failure_tracker import (
     FailureOutcome,
     FailureTracker,
@@ -35,8 +39,14 @@ class DirectCoordinator(DataUpdateCoordinator):
     _RETRY_DELAY_S = 0.25
     _MAX_CONSECUTIVE_FAILURES = 3
 
-    def __init__(self, hass: HomeAssistant, config_entry):
-        """Initialize my coordinator."""
+    def __init__(self, hass: HomeAssistant, config_entry, targets=None):
+        """Initialize my coordinator.
+
+        ``targets`` is an explicit list of :class:`DeviceTarget` to poll
+        (used by the EyBond hub, where children are derived from the
+        discovery registry). When ``None``, the coordinator falls back to
+        the legacy single ``CONF_DEVICE`` from the entry options.
+        """
         interval_seconds = int(
             config_entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
         )
@@ -53,7 +63,8 @@ class DirectCoordinator(DataUpdateCoordinator):
             always_update=False
 
         )
-        # Per-(device, command) consecutive-failure counter + freeze policy.
+        self._targets = targets
+        # Per-(target id, command) consecutive-failure counter + freeze policy.
         self._failures = FailureTracker(self._MAX_CONSECUTIVE_FAILURES)
         # self.my_api = my_api
         # self._device: MyDevice | None = None
@@ -70,6 +81,10 @@ class DirectCoordinator(DataUpdateCoordinator):
         self.devices = await self.get_active_devices()
 
     async def get_active_devices(self):
+        # Explicit targets (EyBond hub children) take precedence.
+        if self._targets is not None:
+            return list(self._targets)
+
         device = self.config_entry.options.get(CONF_DEVICE, None)
         if not device:
             # No device URI configured (entry created but never finished setup,
@@ -81,7 +96,11 @@ class DirectCoordinator(DataUpdateCoordinator):
                 self.config_entry.entry_id,
             )
             return []
-        return [device]
+        # Legacy single-device entry: id == uri preserves existing
+        # entity unique_ids and HA device identifiers.
+        protocol = self.config_entry.options.get(CONF_PROTOCOL, PROTOCOL_VOLTRONIC)
+        name = self.config_entry.data.get(CONF_NAME) or "Inverter"
+        return [DeviceTarget(id=device, uri=device, protocol=protocol, name=name)]
 
     async def _async_update_data(self):
         strict_crc = bool(
@@ -90,64 +109,70 @@ class DirectCoordinator(DataUpdateCoordinator):
         prev_data = self.data or {}
         queue = self.hass.data["dess_monitor_local_queue"]
 
-        async def fetch_with_retry(device: str, cmd: str, section: str) -> dict:
+        async def fetch_with_retry(key: str, uri: str, cmd: str, section: str) -> dict:
             """Read a command with one fast retry, then apply the pure
-            freeze/unavailable policy (see FailureTracker)."""
+            freeze/unavailable policy (see FailureTracker).
+
+            ``key`` is the target's stable id (failure tracking + last-known
+            lookup); ``uri`` is the transport address the command is sent to.
+            """
             for attempt in range(2):
                 try:
                     result = await queue.enqueue(
-                        lambda d=device, c=cmd: get_direct_data(
+                        lambda d=uri, c=cmd: get_direct_data(
                             d, c, 30, strict_crc=strict_crc
                         )
                     )
                 except Exception as err:  # transport raised unexpectedly
                     _LOGGER.debug(
-                        "%s/%s attempt %d raised %r", device, cmd, attempt + 1, err
+                        "%s/%s attempt %d raised %r", key, cmd, attempt + 1, err
                     )
                     result = None
                 if result:
-                    self._failures.on_success(device, cmd)
+                    self._failures.on_success(key, cmd)
                     return result
                 if attempt == 0:
                     await asyncio.sleep(self._RETRY_DELAY_S)
 
-            count = self._failures.on_failure(device, cmd)
-            last_known = (prev_data.get(device) or {}).get(section) or {}
+            count = self._failures.on_failure(key, cmd)
+            last_known = (prev_data.get(key) or {}).get(section) or {}
             data, outcome = self._failures.resolve(count, last_known)
             if outcome is FailureOutcome.FREEZE:
                 _LOGGER.debug(
                     "%s/%s read failed (consecutive=%d/%d); freezing on last known data",
-                    device, cmd, count, self._MAX_CONSECUTIVE_FAILURES,
+                    key, cmd, count, self._MAX_CONSECUTIVE_FAILURES,
                 )
             elif outcome is FailureOutcome.UNAVAILABLE:
                 _LOGGER.warning(
                     "%s/%s failed %d times in a row; flipping to unavailable",
-                    device, cmd, count,
+                    key, cmd, count,
                 )
             return data
 
         try:
             async with async_timeout.timeout(120):
-                async def fetch_device_data(device):
-                    qpigs = await fetch_with_retry(device, 'QPIGS', 'qpigs')
-                    qpiri = await fetch_with_retry(device, 'QPIRI', 'qpiri')
+                async def fetch_device_data(target):
+                    key = target.id
+                    uri = target.uri
+                    qpigs = await fetch_with_retry(key, uri, 'QPIGS', 'qpigs')
+                    qpiri = await fetch_with_retry(key, uri, 'QPIRI', 'qpiri')
                     # QMOD = current operating mode (PowerOn / Standby /
                     # Line / Battery / Fault). Cheap one-byte answer; gives
                     # us a real status sensor for automations instead of
                     # parsing the QPIGS status bits string.
-                    qmod = await fetch_with_retry(device, 'QMOD', 'qmod')
+                    qmod = await fetch_with_retry(key, uri, 'QMOD', 'qmod')
                     # QPIGS2 = second PV input on dual-MPPT models. Many
                     # inverters NAK it, in which case fetch_with_retry
                     # returns {} and the PV2 sensors stay unavailable —
                     # zero cost for the rest of users.
-                    qpigs2 = await fetch_with_retry(device, 'QPIGS2', 'qpigs2')
+                    qpigs2 = await fetch_with_retry(key, uri, 'QPIGS2', 'qpigs2')
                     # QPIWS = warning/fault bitstring. PI18 inverters NAK
                     # this and respond to QFWS instead; fetch both — the
                     # one that doesn't apply just returns ``{}`` and
                     # downstream sensors stay unavailable.
-                    qpiws = await fetch_with_retry(device, 'QPIWS', 'qpiws')
-                    qfws = await fetch_with_retry(device, 'QFWS', 'qfws')
-                    return device, {
+                    qpiws = await fetch_with_retry(key, uri, 'QPIWS', 'qpiws')
+                    qfws = await fetch_with_retry(key, uri, 'QFWS', 'qfws')
+                    return key, {
                         "timestamp": datetime.now(),
                         'qpigs': qpigs,
                         'qpiri': qpiri,

@@ -20,13 +20,25 @@ pytest.importorskip("pytest_homeassistant_custom_component.common")
 
 from unittest.mock import patch  # noqa: E402
 
+from homeassistant.helpers import entity_registry as er  # noqa: E402
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
 
+from custom_components.dess_monitor_local.api.protocols.eybond_discovery import (  # noqa: E402
+    EybondRegistry,
+)
 from custom_components.dess_monitor_local.const import (  # noqa: E402
     CONF_DEVICE,
+    CONF_ENTRY_KIND,
+    CONF_EYBOND_ANNOUNCE_IP,
+    CONF_EYBOND_BIND_HOST,
+    CONF_EYBOND_BIND_PORT,
+    CONF_EYBOND_BROADCAST,
+    CONF_HUB_REVISION,
+    CONF_NAME,
     CONF_PROTOCOL,
     CONF_UPDATE_INTERVAL,
     DOMAIN,
+    ENTRY_KIND_EYBOND_HUB,
     PROTOCOL_TCP_ELFIN,
 )
 
@@ -93,6 +105,96 @@ async def test_setup_creates_entities_and_unloads(hass, enable_custom_integratio
     # Clean teardown — the command queue must drain without lingering tasks.
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+# ---------------------------------------------------------------------------
+# EyBond hub entry (one listener, children from the discovery registry)
+# ---------------------------------------------------------------------------
+class _FakeManager:
+    def __init__(self, registry):
+        self.registry = registry
+
+
+async def _fake_get_manager(
+    bind_host, bind_port, broadcast="255.255.255.255", announce_ip=None, registry=None
+):
+    return _FakeManager(registry if registry is not None else EybondRegistry())
+
+
+async def _fake_shutdown_manager(bind_host, bind_port):
+    return None
+
+
+def _hub_entry() -> MockConfigEntry:
+    return MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="eybondhub1",
+        data={CONF_NAME: "Garage Hub", CONF_ENTRY_KIND: ENTRY_KIND_EYBOND_HUB},
+        options={
+            CONF_ENTRY_KIND: ENTRY_KIND_EYBOND_HUB,
+            CONF_EYBOND_BIND_HOST: "0.0.0.0",
+            CONF_EYBOND_BIND_PORT: 8899,
+            CONF_EYBOND_BROADCAST: "255.255.255.255",
+            CONF_EYBOND_ANNOUNCE_IP: "",
+            CONF_UPDATE_INTERVAL: 10,
+            CONF_HUB_REVISION: 0,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_hub_entry_polls_enabled_child(
+    hass, enable_custom_integrations, hass_storage
+):
+    """A hub entry builds entities for an enabled, protocol-assigned child
+    loaded from its discovery Store, and unloads cleanly."""
+    # Seed the discovery Store with one enabled Voltronic child.
+    store_key = f"{DOMAIN}.eybond_hub.eybondhub1"
+    hass_storage[store_key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": store_key,
+        "data": {
+            "PNTEST000001": {
+                "pn": "PNTEST000001",
+                "name": "Child A",
+                "enabled": True,
+                "protocol": "voltronic",
+                "devaddr": 1,
+                "status": "disconnected",
+            }
+        },
+    }
+
+    entry = _hub_entry()
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.dess_monitor_local.eybond_hub.get_eybond_manager",
+        side_effect=_fake_get_manager,
+    ), patch(
+        "custom_components.dess_monitor_local.eybond_hub.shutdown_eybond_manager",
+        side_effect=_fake_shutdown_manager,
+    ), patch(
+        "custom_components.dess_monitor_local.coordinators.direct_coordinator.get_direct_data",
+        side_effect=_fake_get,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # The enabled child produced entities keyed by its stable id.
+        ent_reg = er.async_get(hass)
+        entities = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+        assert any(
+            e.unique_id.startswith("eybond:PNTEST000001:1") for e in entities
+        ), "expected entities for the enabled child"
+        # The hub device exposes the discovery diagnostic sensor.
+        assert any(
+            e.unique_id == "eybond_hub:eybondhub1:discovered" for e in entities
+        ), "expected the hub discovery sensor"
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
 
 
 @pytest.mark.asyncio

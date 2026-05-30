@@ -22,10 +22,14 @@ from homeassistant.helpers.selector import (
 from .const import (
     CONF_AGENT_DEVICE_ID,
     CONF_DEVICE,
+    CONF_ENTRY_KIND,
     CONF_EYBOND_ANNOUNCE_IP,
+    CONF_EYBOND_BIND_HOST,
+    CONF_EYBOND_BIND_PORT,
     CONF_EYBOND_BROADCAST,
     CONF_EYBOND_DEVADDR,
     CONF_HOST,
+    CONF_HUB_REVISION,
     CONF_NAME,
     CONF_PORT,
     CONF_PROTOCOL,
@@ -44,6 +48,7 @@ from .const import (
     DEFAULT_TRANSPORT_BY_PROTOCOL,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    ENTRY_KIND_EYBOND_HUB,
     LEGACY_PROTOCOL_TRANSPORT,
     MAX_UPDATE_INTERVAL,
     MIN_UPDATE_INTERVAL,
@@ -58,6 +63,17 @@ from .const import (
     TRANSPORT_TCP,
     TRANSPORT_TCP_ELFIN,
     TRANSPORTS_BY_PROTOCOL,
+)
+
+# Per-child protocol options offered in the hub device-management UI.
+# "none" means unconfigured → the child is tracked but not polled. Agent is
+# excluded — it's HTTP-only and can't be forwarded through a dongle.
+_HUB_CHILD_PROTOCOL_NONE = "none"
+_HUB_CHILD_PROTOCOLS = (
+    _HUB_CHILD_PROTOCOL_NONE,
+    PROTOCOL_VOLTRONIC,
+    PROTOCOL_PI18,
+    PROTOCOL_MODBUS,
 )
 
 # Protocols where the request/response framing carries a CRC and the
@@ -398,6 +414,40 @@ def _validate_connection(
     return errors
 
 
+def _hub_listener_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Listener fields for an EyBond hub entry (name + bind + announce)."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_NAME, default=defaults.get(CONF_NAME, vol.UNDEFINED)
+            ): cv.string,
+            vol.Required(
+                CONF_HOST,
+                default=defaults.get(CONF_HOST, DEFAULT_EYBOND_BIND_HOST),
+            ): cv.string,
+            vol.Required(
+                CONF_PORT,
+                default=defaults.get(CONF_PORT, DEFAULT_EYBOND_BIND_PORT),
+            ): cv.port,
+            vol.Required(
+                CONF_EYBOND_BROADCAST,
+                default=defaults.get(CONF_EYBOND_BROADCAST, DEFAULT_EYBOND_BROADCAST),
+            ): cv.string,
+            # Empty = auto-detect; set to the host's LAN IP in Docker bridge mode.
+            vol.Optional(
+                CONF_EYBOND_ANNOUNCE_IP,
+                default=defaults.get(
+                    CONF_EYBOND_ANNOUNCE_IP, DEFAULT_EYBOND_ANNOUNCE_IP
+                ),
+            ): cv.string,
+            vol.Required(
+                CONF_UPDATE_INTERVAL,
+                default=defaults.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+            ): _update_interval_field(),
+        }
+    )
+
+
 def _protocol_schema(default_protocol: str) -> vol.Schema:
     default_protocol, _ = _normalize_protocol_transport(default_protocol)
     return vol.Schema(
@@ -445,7 +495,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._transport: str = TRANSPORT_TCP_ELFIN
 
     async def async_step_user(self, user_input=None):
-        """Step 1: hub name."""
+        """Step 1: choose a single inverter or an EyBond multi-dongle hub."""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["device", "hub"],
+        )
+
+    async def async_step_device(self, user_input=None):
+        """Single-inverter branch: collect the name, then protocol/transport."""
         errors: dict[str, str] = {}
         if user_input is not None:
             self._name = user_input[CONF_NAME].strip()
@@ -455,8 +512,54 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_protocol()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="device",
             data_schema=vol.Schema({vol.Required(CONF_NAME): str}),
+            errors=errors,
+        )
+
+    async def async_step_hub(self, user_input=None):
+        """EyBond hub branch: one listener, many auto-discovered dongles.
+
+        Children are discovered by PN at runtime; protocol is assigned later
+        per dongle in the hub's options (default unconfigured = not polled).
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = (user_input.get(CONF_NAME) or "").strip()
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            else:
+                bind_host = (
+                    user_input.get(CONF_HOST) or DEFAULT_EYBOND_BIND_HOST
+                ).strip()
+                bind_port = int(user_input.get(CONF_PORT) or DEFAULT_EYBOND_BIND_PORT)
+                broadcast = (
+                    user_input.get(CONF_EYBOND_BROADCAST) or DEFAULT_EYBOND_BROADCAST
+                ).strip()
+                announce_ip = (
+                    user_input.get(CONF_EYBOND_ANNOUNCE_IP)
+                    or DEFAULT_EYBOND_ANNOUNCE_IP
+                ).strip()
+                update_interval = int(
+                    user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+                )
+                return self.async_create_entry(
+                    title=name,
+                    data={CONF_NAME: name, CONF_ENTRY_KIND: ENTRY_KIND_EYBOND_HUB},
+                    options={
+                        CONF_ENTRY_KIND: ENTRY_KIND_EYBOND_HUB,
+                        CONF_EYBOND_BIND_HOST: bind_host,
+                        CONF_EYBOND_BIND_PORT: bind_port,
+                        CONF_EYBOND_BROADCAST: broadcast,
+                        CONF_EYBOND_ANNOUNCE_IP: announce_ip,
+                        CONF_UPDATE_INTERVAL: update_interval,
+                        CONF_HUB_REVISION: 0,
+                    },
+                )
+
+        return self.async_show_form(
+            step_id="hub",
+            data_schema=_hub_listener_schema(dict(user_input or {})),
             errors=errors,
         )
 
@@ -557,6 +660,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
+        kind = config_entry.options.get(CONF_ENTRY_KIND) or config_entry.data.get(
+            CONF_ENTRY_KIND
+        )
+        if kind == ENTRY_KIND_EYBOND_HUB:
+            return EybondHubOptionsFlow(config_entry)
         return OptionsFlow(config_entry)
 
 
@@ -610,7 +718,34 @@ class OptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input=None):
         self._load_defaults()
+        # Legacy EyBond entries can be converted to a hub (discovery + multi
+        # dongle + management UI). Offer it alongside plain editing.
+        if self._transport == TRANSPORT_EYBOND:
+            return self.async_show_menu(
+                step_id="init", menu_options=["edit", "migrate_hub"]
+            )
         return await self.async_step_protocol()
+
+    async def async_step_edit(self, user_input=None):
+        return await self.async_step_protocol()
+
+    async def async_step_migrate_hub(self, user_input=None):
+        """Convert this legacy eybond entry into a hub entry (opt-in)."""
+        if user_input is not None:
+            from . import eybond_hub
+
+            result = await eybond_hub.async_migrate_legacy_to_hub(
+                self.hass, self._config_entry
+            )
+            if isinstance(result, str):
+                return self.async_abort(reason=result)
+            # Applying the hub options reloads the entry as a hub.
+            return self.async_create_entry(title="", data=result)
+
+        return self.async_show_form(
+            step_id="migrate_hub",
+            data_schema=vol.Schema({}),
+        )
 
     async def async_step_protocol(self, user_input=None):
         if user_input is not None:
@@ -700,4 +835,224 @@ class OptionsFlow(config_entries.OptionsFlow):
             data_schema=schema,
             errors=errors,
             description_placeholders={"protocol": protocol, "transport": transport},
+        )
+
+
+def _hub_listener_options_schema(defaults: dict[str, Any]) -> vol.Schema:
+    """Editable listener settings for a hub (no rename — title stays put)."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_HOST,
+                default=defaults.get(CONF_HOST, DEFAULT_EYBOND_BIND_HOST),
+            ): cv.string,
+            vol.Required(
+                CONF_PORT,
+                default=defaults.get(CONF_PORT, DEFAULT_EYBOND_BIND_PORT),
+            ): cv.port,
+            vol.Required(
+                CONF_EYBOND_BROADCAST,
+                default=defaults.get(CONF_EYBOND_BROADCAST, DEFAULT_EYBOND_BROADCAST),
+            ): cv.string,
+            vol.Optional(
+                CONF_EYBOND_ANNOUNCE_IP,
+                default=defaults.get(
+                    CONF_EYBOND_ANNOUNCE_IP, DEFAULT_EYBOND_ANNOUNCE_IP
+                ),
+            ): cv.string,
+            vol.Required(
+                CONF_UPDATE_INTERVAL,
+                default=defaults.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+            ): _update_interval_field(),
+        }
+    )
+
+
+class EybondHubOptionsFlow(config_entries.OptionsFlow):
+    """Manage an EyBond hub after install: discovered devices + listener.
+
+    The discovered-device registry is read live from the running hub
+    (``eybond_hub`` runtime). Editing a device writes to the registry, saves
+    the Store, and bumps a revision counter in options so the entry reloads
+    and rebuilds child devices/entities.
+    """
+
+    def __init__(self, config_entry: config_entries.ConfigEntry):
+        self._config_entry = config_entry
+        self._selected_pn: str | None = None
+
+    def _runtime(self):
+        from . import eybond_hub
+
+        return eybond_hub.get_hub_runtime(self.hass, self._config_entry.entry_id)
+
+    def _bumped_options(self, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        new_options = dict(self._config_entry.options)
+        if extra:
+            new_options.update(extra)
+        new_options[CONF_HUB_REVISION] = (
+            int(new_options.get(CONF_HUB_REVISION, 0)) + 1
+        )
+        return new_options
+
+    async def async_step_init(self, user_input=None):
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["devices", "rescan", "listener"],
+        )
+
+    async def async_step_rescan(self, user_input=None):
+        """Force a discovery scan so new dongles attach (briefly flaps
+        connected ones — broadcast can't target a single dongle)."""
+        if user_input is not None:
+            from .api.protocols.eybond_dongle import get_eybond_manager
+            from .eybond_hub import hub_listener_config
+
+            bind_host, bind_port, broadcast, announce_ip = hub_listener_config(
+                self._config_entry
+            )
+            manager = await get_eybond_manager(
+                bind_host, bind_port, broadcast, announce_ip
+            )
+            manager.force_rediscovery()
+            return self.async_abort(reason="rescan_started")
+
+        return self.async_show_form(step_id="rescan", data_schema=vol.Schema({}))
+
+    async def async_step_devices(self, user_input=None):
+        runtime = self._runtime()
+        registry = runtime.registry if runtime is not None else None
+        records = registry.all() if registry is not None else []
+        if not records:
+            return self.async_abort(reason="no_devices")
+
+        if user_input is not None:
+            self._selected_pn = user_input["pn"]
+            return await self.async_step_device_edit()
+
+        options = []
+        for rec in records:
+            label = f"{rec.pn} · {rec.status}"
+            if rec.enabled and rec.protocol:
+                label += f" · {rec.protocol}"
+            elif rec.enabled:
+                label += " · enabled (no protocol)"
+            options.append(SelectOptionDict(value=rec.pn, label=label))
+        schema = vol.Schema(
+            {
+                vol.Required("pn"): SelectSelector(
+                    SelectSelectorConfig(
+                        options=options, mode=SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="devices", data_schema=schema)
+
+    async def async_step_device_edit(self, user_input=None):
+        runtime = self._runtime()
+        registry = runtime.registry if runtime is not None else None
+        pn = self._selected_pn
+        rec = registry.get(pn) if registry is not None and pn else None
+        if rec is None:
+            return self.async_abort(reason="no_devices")
+
+        if user_input is not None:
+            if user_input.get("remove"):
+                # Drop a stale/gone dongle from the registry. If it's still
+                # physically present it will simply be re-discovered (as a
+                # fresh unconfigured record) on its next heartbeat.
+                registry.remove(pn)
+            else:
+                enabled = bool(user_input.get("enabled", False))
+                name = (user_input.get(CONF_NAME) or "").strip()
+                protocol = user_input.get(CONF_PROTOCOL, _HUB_CHILD_PROTOCOL_NONE)
+                devaddr = int(user_input.get(CONF_EYBOND_DEVADDR, rec.devaddr))
+                registry.set_name(pn, name)
+                registry.set_devaddr(pn, devaddr)
+                registry.set_protocol(
+                    pn,
+                    None if protocol == _HUB_CHILD_PROTOCOL_NONE else protocol,
+                )
+                registry.set_enabled(pn, enabled)
+            # Persist before the reload so setup re-reads the new config.
+            if runtime is not None:
+                await runtime.async_save(force=True)
+            return self.async_create_entry(title="", data=self._bumped_options())
+
+        proto_options = [
+            SelectOptionDict(value=p, label=p) for p in _HUB_CHILD_PROTOCOLS
+        ]
+        schema = vol.Schema(
+            {
+                vol.Optional("enabled", default=rec.enabled): BooleanSelector(),
+                vol.Optional(CONF_NAME, default=rec.name or rec.pn): cv.string,
+                vol.Required(
+                    CONF_PROTOCOL,
+                    default=rec.protocol or _HUB_CHILD_PROTOCOL_NONE,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=proto_options, mode=SelectSelectorMode.LIST
+                    )
+                ),
+                vol.Required(
+                    CONF_EYBOND_DEVADDR, default=rec.devaddr
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1, max=16, step=1, mode=NumberSelectorMode.BOX
+                    )
+                ),
+                # Remove a stale/gone dongle from discovery. Other fields are
+                # ignored when this is set.
+                vol.Optional("remove", default=False): BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="device_edit",
+            data_schema=schema,
+            description_placeholders={
+                "pn": pn,
+                "status": rec.status,
+                "last_seen": rec.last_seen or "never",
+            },
+        )
+
+    async def async_step_listener(self, user_input=None):
+        opts = dict(self._config_entry.options)
+        if user_input is not None:
+            extra = {
+                CONF_EYBOND_BIND_HOST: (
+                    user_input.get(CONF_HOST) or DEFAULT_EYBOND_BIND_HOST
+                ).strip(),
+                CONF_EYBOND_BIND_PORT: int(
+                    user_input.get(CONF_PORT) or DEFAULT_EYBOND_BIND_PORT
+                ),
+                CONF_EYBOND_BROADCAST: (
+                    user_input.get(CONF_EYBOND_BROADCAST) or DEFAULT_EYBOND_BROADCAST
+                ).strip(),
+                CONF_EYBOND_ANNOUNCE_IP: (
+                    user_input.get(CONF_EYBOND_ANNOUNCE_IP) or ""
+                ).strip(),
+                CONF_UPDATE_INTERVAL: int(
+                    user_input.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+                ),
+            }
+            return self.async_create_entry(title="", data=self._bumped_options(extra))
+
+        defaults = {
+            CONF_HOST: opts.get(CONF_EYBOND_BIND_HOST, DEFAULT_EYBOND_BIND_HOST),
+            CONF_PORT: opts.get(CONF_EYBOND_BIND_PORT, DEFAULT_EYBOND_BIND_PORT),
+            CONF_EYBOND_BROADCAST: opts.get(
+                CONF_EYBOND_BROADCAST, DEFAULT_EYBOND_BROADCAST
+            ),
+            CONF_EYBOND_ANNOUNCE_IP: opts.get(
+                CONF_EYBOND_ANNOUNCE_IP, DEFAULT_EYBOND_ANNOUNCE_IP
+            ),
+            CONF_UPDATE_INTERVAL: opts.get(
+                CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
+            ),
+        }
+        return self.async_show_form(
+            step_id="listener",
+            data_schema=_hub_listener_options_schema(defaults),
         )

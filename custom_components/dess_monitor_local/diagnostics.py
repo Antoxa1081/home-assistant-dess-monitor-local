@@ -34,7 +34,15 @@ def _coordinator_section(entry: ConfigEntry) -> dict[str, Any]:
             if coordinator.update_interval is not None
             else None
         ),
-        "devices": coordinator.devices,
+        "devices": [
+            {
+                "id": getattr(t, "id", t),
+                "uri": getattr(t, "uri", t),
+                "protocol": getattr(t, "protocol", None),
+                "name": getattr(t, "name", None),
+            }
+            for t in (coordinator.devices or [])
+        ],
         "consecutive_failures": dict(
             getattr(getattr(coordinator, "_failures", None), "_counts", {}) or {}
         ),

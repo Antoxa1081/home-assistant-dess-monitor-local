@@ -3,7 +3,12 @@
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from custom_components.dess_monitor_local.const import CONF_PROTOCOL, PROTOCOL_PI18
+from custom_components.dess_monitor_local.const import (
+    CONF_ENTRY_KIND,
+    CONF_PROTOCOL,
+    ENTRY_KIND_EYBOND_HUB,
+    PROTOCOL_PI18,
+)
 from custom_components.dess_monitor_local.sensors.direct_sensor import (
     DIRECT_SENSORS,
     PI18_SENSORS,
@@ -33,9 +38,20 @@ async def async_setup_entry(
     """Add sensors for passed config_entry in HA."""
     hub = config_entry.runtime_data
     new_devices = []
-    is_pi18 = config_entry.options.get(CONF_PROTOCOL) == PROTOCOL_PI18
+    entry_protocol = config_entry.options.get(CONF_PROTOCOL)
+
+    # Hub entries get a diagnostic device showing discovered dongles, so the
+    # integration is visibly "working" even before any child is configured.
+    if config_entry.options.get(CONF_ENTRY_KIND) == ENTRY_KIND_EYBOND_HUB:
+        from .sensors.eybond_hub_sensor import EybondHubDiscoverySensor
+
+        new_devices.append(EybondHubDiscoverySensor(hass, config_entry))
 
     for item in hub.items:
+        # Per-item protocol (a hub may mix protocols across children); fall
+        # back to the entry-level option for legacy single-device entries.
+        is_pi18 = (getattr(item, "protocol", None) or entry_protocol) == PROTOCOL_PI18
+
         # Construct the SoC sensor first — the time-to-* sensors hold a
         # reference to it so they read SoC and capacity from the same
         # in-memory state, avoiding any cross-entity state-lookup race

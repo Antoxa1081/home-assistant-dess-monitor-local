@@ -17,6 +17,22 @@ CONF_EYBOND_ANNOUNCE_IP = "eybond_announce_ip"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_STRICT_CRC = "strict_crc"
 
+# Entry kind — distinguishes a single-inverter entry (legacy/default) from an
+# EyBond hub entry (one TCP listener, many auto-discovered dongles routed by
+# PN). Absent or unknown is treated as a device entry for backward compat.
+CONF_ENTRY_KIND = "entry_kind"
+ENTRY_KIND_DEVICE = "device"
+ENTRY_KIND_EYBOND_HUB = "eybond_hub"
+
+# Hub listener config keys (stored in a hub entry's options).
+CONF_EYBOND_BIND_HOST = "eybond_bind_host"
+CONF_EYBOND_BIND_PORT = "eybond_bind_port"
+# Monotonic counter bumped whenever the discovered-device registry (which
+# lives in a dedicated Store, not in options) is edited — touching options
+# this way triggers the update listener so the entry reloads and re-reads
+# the registry to (re)build child devices/entities.
+CONF_HUB_REVISION = "hub_revision"
+
 # Supported protocol identifiers
 PROTOCOL_VOLTRONIC = "voltronic"
 PROTOCOL_MODBUS = "modbus"

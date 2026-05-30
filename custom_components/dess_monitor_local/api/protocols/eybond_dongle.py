@@ -6,11 +6,14 @@ Unlike the other transports, the dongle initiates the TCP connection to
 us. We:
 
   1. Bind a TCP listener on the configured port (default 8899).
-  2. Broadcast ``set>server=<MY_IP>:<port>;`` on UDP/58899 every 5s while
-     no dongle is connected — that command tells the dongle to switch
-     upstream from the SmartESS cloud to us.
-  3. After the dongle's first heartbeat, stop announcing and keep the
-     session alive with FC=1 heartbeats.
+  2. Broadcast ``set>server=<MY_IP>:<port>;`` on UDP/58899 every 5s while an
+     expected dongle is still missing — that command tells dongles to switch
+     upstream from the SmartESS cloud to us. We STOP broadcasting once the
+     expected dongles are connected: each broadcast makes a dongle reconnect,
+     so announcing at an already-connected one flaps it offline.
+  3. Accept multiple dongle connections on one listener. Each session is
+     kept alive with FC=1 heartbeats and identified by the ``PN`` carried
+     in the dongle's own heartbeat.
   4. On each read, wrap the Voltronic ASCII command (``QPIGS\\r``,
      ``QPIRI\\r``, ...) inside an EyBond FC=4 (Forward2Device) frame,
      await the response keyed by TID, unwrap, and return the inner
@@ -22,7 +25,9 @@ into ``decode_direct_response``.
 
 A single TCP listener serves all ``eybond://`` devices in this HA
 instance; ``devaddr`` in the URI selects which inverter on the RS485 bus
-(1-based). Different bind ports get independent listener instances.
+(1-based). Multiple dongles can share one listener — requests route by
+``PN`` (see :meth:`EybondManager.send_frame`); ``pn=None`` keeps the legacy
+single-dongle behaviour. Different bind ports get independent listeners.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 from ...const import PROTOCOL_PI18
 from ..crc import build_pi30_frame
 from ..decoders.pi18 import build_request_frame
+from .eybond_discovery import EybondRegistry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,9 +70,28 @@ DEFAULT_BROADCAST = "255.255.255.255"
 DEFAULT_BIND_PORT = 8899
 
 ANNOUNCE_INTERVAL = 5.0
-HEARTBEAT_INTERVAL = 60.0
+# How often the announcer re-evaluates whether to keep broadcasting. Kept
+# short (vs the 5s send cadence) so it catches the brief window where all
+# expected dongles are connected and pauses before knocking them offline.
+ANNOUNCE_CHECK_INTERVAL = 1.0
+# Duration of a user-triggered "scan for new dongles" — the announcer
+# broadcasts regardless of connection state for this window so brand-new
+# dongles receive ``set>server`` and attach. Briefly flaps connected dongles
+# (broadcast can't target one), which is acceptable for an explicit scan.
+REDISCOVERY_WINDOW = 60.0
+# Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
+# if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
+# (FC=4) does NOT count as keepalive. Observed in field logs: every session
+# died ~4.4s after connect with the old 60s interval, causing constant
+# reconnect churn. Send well inside that window.
+HEARTBEAT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 5.0
-SESSION_WAIT_TIMEOUT = 30.0
+# How long a request waits for its dongle to (re)connect before giving up.
+# Kept short: requests are serialized through one shared command queue, so a
+# long wait on an absent dongle stalls polling of every other device. The
+# coordinator simply retries next cycle, and a connected dongle answers
+# immediately. (Was 30s — that made one absent dongle freeze the whole hub.)
+SESSION_WAIT_TIMEOUT = 3.0
 
 # After a bind failure, suppress further bind attempts for this many
 # seconds to keep the log from drowning in retries on every coordinator
@@ -158,6 +183,18 @@ def parse_eybond_uri(device: str) -> tuple[str, int, int, str, str | None]:
     return bind_host, bind_port, devaddr, broadcast, announce_ip
 
 
+def _parse_pn_from_uri(device: str) -> str | None:
+    """Extract a ``?pn=<PN>`` query param, if present.
+
+    EyBond hub children encode their target dongle's PN in the URI so the
+    existing dispatcher/adapter path (which only passes the URI) can route
+    to a specific dongle on a shared listener.
+    """
+    query = parse_qs(urlparse(device).query or "")
+    pn = (query.get("pn") or [""])[0].strip()
+    return pn or None
+
+
 def _detect_local_ip() -> str:
     """Best-effort local IP discovery for the announce payload."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -238,7 +275,7 @@ def _resolve_broadcast_for_announce_ip(announce_ip: str) -> str:
 # ---------------------------------------------------------------------------
 # Session — one connected dongle
 # ---------------------------------------------------------------------------
-@dataclass
+@dataclass(eq=False)  # identity hash/eq so sessions are usable as set elements
 class _Session:
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
@@ -247,6 +284,7 @@ class _Session:
     _tid: int = 0
     pending: dict[int, asyncio.Future] = field(default_factory=dict)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    hb_task: asyncio.Task | None = None
 
     def next_tid(self) -> int:
         self._tid = (self._tid + 1) & 0xFFFF
@@ -263,6 +301,7 @@ class EybondManager:
         bind_port: int,
         broadcast: str,
         announce_ip: str | None = None,
+        registry: EybondRegistry | None = None,
     ) -> None:
         self.bind_host = bind_host
         self.bind_port = bind_port
@@ -270,11 +309,22 @@ class EybondManager:
         # Explicit override for the IP advertised in the UDP payload.
         # ``None`` falls back to :func:`_detect_local_ip`.
         self.announce_ip = announce_ip
+        # Discovery registry: lifecycle + per-device config keyed by PN.
+        # Owned by the hub; survives session churn (Phase 2).
+        self.registry = registry or EybondRegistry()
         self._server: asyncio.AbstractServer | None = None
         self._announce_task: asyncio.Task | None = None
-        self._hb_task: asyncio.Task | None = None
-        self._session: _Session | None = None
-        self._session_ready = asyncio.Event()
+        # Multi-session state: a single TCP listener accepts many dongles
+        # on one port. Sessions start in ``_sessions`` (unidentified) and
+        # are promoted into ``_sessions_by_pn`` once their heartbeat
+        # reveals a PN. ``_ready_by_pn`` gates per-PN waiters; ``_any_ready``
+        # gates legacy PN-less requests (single-dongle compatibility).
+        self._sessions: set[_Session] = set()
+        self._sessions_by_pn: dict[str, _Session] = {}
+        self._ready_by_pn: dict[str, asyncio.Event] = {}
+        self._any_ready = asyncio.Event()
+        # Monotonic deadline for a forced-rediscovery window (0 = inactive).
+        self._force_announce_until: float = 0.0
         self._start_lock = asyncio.Lock()
         # Sticky bind-failure state — keeps the log clean instead of
         # retrying every coordinator tick when port 8899 is held by
@@ -283,7 +333,57 @@ class EybondManager:
 
     @property
     def connected(self) -> bool:
-        return self._session is not None
+        return bool(self._sessions)
+
+    @property
+    def identified_pns(self) -> list[str]:
+        """PNs of currently connected, identified dongles."""
+        return sorted(self._sessions_by_pn)
+
+    @property
+    def discovered(self) -> list:
+        """All dongles ever discovered on this hub (lifecycle records)."""
+        return self.registry.all()
+
+    def _ready_event_for(self, pn: str) -> asyncio.Event:
+        ev = self._ready_by_pn.get(pn)
+        if ev is None:
+            ev = asyncio.Event()
+            self._ready_by_pn[pn] = ev
+        return ev
+
+    def _any_session(self) -> _Session | None:
+        """Deterministically pick one session for a legacy PN-less request."""
+        if not self._sessions:
+            return None
+        if len(self._sessions) > 1:
+            _LOGGER.warning(
+                "EyBond: PN-less request with %d sessions connected on %s:%d; "
+                "routing to first identified — specify a PN to target a "
+                "specific dongle",
+                len(self._sessions), self.bind_host, self.bind_port,
+            )
+        identified = sorted(
+            (s for s in self._sessions if s.pn), key=lambda s: s.pn
+        )
+        if identified:
+            return identified[0]
+        return next(iter(self._sessions))
+
+    def _drop_session(self, sess: _Session, reason: str) -> None:
+        """Idempotently remove a session from all maps and fail its pending."""
+        self._sessions.discard(sess)
+        if sess.pn and self._sessions_by_pn.get(sess.pn) is sess:
+            del self._sessions_by_pn[sess.pn]
+            ev = self._ready_by_pn.get(sess.pn)
+            if ev is not None:
+                ev.clear()
+        for fut in list(sess.pending.values()):
+            if not fut.done():
+                fut.set_exception(ConnectionError(reason))
+        sess.pending.clear()
+        if not self._sessions:
+            self._any_ready.clear()
 
     async def ensure_started(self) -> None:
         loop = asyncio.get_running_loop()
@@ -328,42 +428,47 @@ class EybondManager:
                     "EyBond: TCP listener already running on %s:%d",
                     self.bind_host, self.bind_port,
                 )
-            if self._session is None and (
-                self._announce_task is None or self._announce_task.done()
-            ):
+            # The announcer task stays alive, but only actually broadcasts
+            # while an expected dongle is missing (see _should_announce) —
+            # broadcasting at a connected dongle makes it reconnect.
+            if self._announce_task is None or self._announce_task.done():
                 self._announce_task = asyncio.create_task(self._announce_loop())
 
     async def shutdown(self) -> None:
         _LOGGER.info(
-            "EyBond: manager shutdown begin (bind=%s:%d, session=%s)",
-            self.bind_host, self.bind_port,
-            self._session.peer if self._session else "none",
+            "EyBond: manager shutdown begin (bind=%s:%d, sessions=%d %s)",
+            self.bind_host, self.bind_port, len(self._sessions),
+            self.identified_pns or "[]",
         )
-        for task in (self._announce_task, self._hb_task):
-            if task and not task.done():
-                task.cancel()
+        if self._announce_task and not self._announce_task.done():
+            self._announce_task.cancel()
+            try:
+                await self._announce_task
+            except asyncio.CancelledError:
+                pass
+        self._announce_task = None
+        for sess in list(self._sessions):
+            if sess.hb_task and not sess.hb_task.done():
+                sess.hb_task.cancel()
                 try:
-                    await task
+                    await sess.hb_task
                 except asyncio.CancelledError:
                     pass
-        self._announce_task = None
-        self._hb_task = None
-        if self._session:
-            n_pending = len(self._session.pending)
-            for fut in self._session.pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("manager shutting down"))
+            n_pending = len(sess.pending)
+            self._drop_session(sess, "manager shutting down")
             try:
-                self._session.writer.close()
+                sess.writer.close()
             except Exception:
                 pass
             if n_pending:
                 _LOGGER.debug(
-                    "EyBond: cancelled %d in-flight request(s) on shutdown",
-                    n_pending,
+                    "EyBond: cancelled %d in-flight request(s) on %s shutdown",
+                    n_pending, sess.peer,
                 )
-            self._session = None
-            self._session_ready.clear()
+        self._sessions.clear()
+        self._sessions_by_pn.clear()
+        self._ready_by_pn.clear()
+        self._any_ready.clear()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -372,6 +477,46 @@ class EybondManager:
                 "EyBond: TCP listener on %s:%d closed",
                 self.bind_host, self.bind_port,
             )
+
+    def _should_announce(self) -> bool:
+        """Whether to keep broadcasting ``set>server``.
+
+        Each announce makes the EyBond dongle (re)connect — so broadcasting
+        to an already-connected dongle knocks it offline and it reconnects,
+        causing constant flapping (field-observed ~5s churn). We therefore
+        announce only while a dongle we actually want is still missing:
+
+        - hub with enabled children: until every enabled PN is connected;
+        - otherwise (legacy single-device / pre-config discovery): until at
+          least one dongle is connected.
+
+        Once satisfied the announcer goes quiet and sessions stay stable
+        (kept alive by the per-session heartbeat). It resumes automatically
+        when an expected dongle drops.
+
+        A forced-rediscovery window (see :meth:`force_rediscovery`) overrides
+        the gate and broadcasts regardless of connection state.
+        """
+        if self._force_announce_until:
+            if asyncio.get_running_loop().time() < self._force_announce_until:
+                return True
+            self._force_announce_until = 0.0  # window elapsed
+
+        connected = set(self._sessions_by_pn)
+        expected = set(self.registry.enabled_pns())
+        if expected:
+            return bool(expected - connected)
+        return not connected
+
+    def force_rediscovery(self, duration: float = REDISCOVERY_WINDOW) -> None:
+        """Broadcast ``set>server`` for ``duration`` seconds regardless of
+        connection state, so brand-new dongles can be discovered on demand."""
+        loop = asyncio.get_running_loop()
+        self._force_announce_until = loop.time() + duration
+        _LOGGER.info(
+            "EyBond: forced rediscovery for %.0fs on %s:%d",
+            duration, self.bind_host, self.bind_port,
+        )
 
     async def _announce_loop(self) -> None:
         if self.announce_ip:
@@ -407,20 +552,43 @@ class EybondManager:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        # Evaluate the pause condition frequently (so we catch the brief window
+        # where all dongles are simultaneously connected and stop knocking them
+        # offline) but rate-limit the actual broadcast to ANNOUNCE_INTERVAL.
+        last_send = 0.0
+        was_paused = False
         try:
             while True:
-                try:
-                    sock.sendto(payload, (self.broadcast, UDP_PORT))
-                    _LOGGER.debug(
-                        "EyBond: UDP -> %s:%d %r",
-                        self.broadcast, UDP_PORT, payload.decode(),
+                if self._should_announce():
+                    if was_paused:
+                        _LOGGER.info(
+                            "EyBond: announce RESUMED — expected dongle missing"
+                        )
+                    was_paused = False
+                    now = loop.time()
+                    if now - last_send >= ANNOUNCE_INTERVAL:
+                        last_send = now
+                        try:
+                            sock.sendto(payload, (self.broadcast, UDP_PORT))
+                            _LOGGER.debug(
+                                "EyBond: UDP -> %s:%d %r",
+                                self.broadcast, UDP_PORT, payload.decode(),
+                            )
+                        except OSError as err:
+                            _LOGGER.warning(
+                                "EyBond: UDP send failed (target %s:%d): %s",
+                                self.broadcast, UDP_PORT, err,
+                            )
+                elif not was_paused:
+                    # Don't keep knocking connected dongles offline.
+                    was_paused = True
+                    _LOGGER.info(
+                        "EyBond: announce PAUSED — expected dongle(s) connected "
+                        "(%s); will resume if one drops",
+                        self.identified_pns,
                     )
-                except OSError as err:
-                    _LOGGER.warning(
-                        "EyBond: UDP send failed (target %s:%d): %s",
-                        self.broadcast, UDP_PORT, err,
-                    )
-                await asyncio.sleep(ANNOUNCE_INTERVAL)
+                await asyncio.sleep(ANNOUNCE_CHECK_INTERVAL)
         except asyncio.CancelledError:
             _LOGGER.info("EyBond: UDP announcer STOP")
             raise
@@ -444,29 +612,13 @@ class EybondManager:
         peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
         _LOGGER.info("EyBond: dongle CONNECTED from %s", peer_str)
 
-        # New connection wins: drop any existing session.
-        if self._session is not None:
-            _LOGGER.warning(
-                "EyBond: replacing existing session from %s with new %s",
-                self._session.peer, peer_str,
-            )
-            old = self._session
-            try:
-                old.writer.close()
-            except Exception:
-                pass
-            for fut in old.pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("replaced by new connection"))
-            self._session = None
-            self._session_ready.clear()
-
+        # Multi-session: a new connection NEVER evicts an existing one.
+        # It joins as unidentified until its heartbeat reveals a PN.
         sess = _Session(reader=reader, writer=writer, peer=peer_str)
-        self._session = sess
-        self._session_ready.set()
+        self._sessions.add(sess)
+        self._any_ready.set()
 
-        await self._stop_announcer()
-        self._hb_task = asyncio.create_task(self._heartbeat_loop(sess))
+        sess.hb_task = asyncio.create_task(self._heartbeat_loop(sess))
 
         try:
             while True:
@@ -485,10 +637,34 @@ class EybondManager:
                     pn = payload[:14].decode("ascii", errors="replace").strip("\x00")
                     if pn and not sess.pn:
                         sess.pn = pn
+                        # Same physical dongle reconnecting? Evict the stale
+                        # session bound to this PN before claiming it.
+                        old = self._sessions_by_pn.get(pn)
+                        if old is not None and old is not sess:
+                            _LOGGER.warning(
+                                "EyBond: PN=%s reconnected from %s, replacing "
+                                "stale session %s",
+                                pn, peer_str, old.peer,
+                            )
+                            try:
+                                old.writer.close()
+                            except Exception:
+                                pass
+                            self._drop_session(
+                                old, "replaced by reconnect with same PN"
+                            )
+                        self._sessions_by_pn[pn] = sess
+                        self._ready_event_for(pn).set()
+                        self.registry.record_seen(pn, peer_str)
                         _LOGGER.info(
-                            "EyBond: dongle identified, PN=%s peer=%s", pn, peer_str
+                            "EyBond: dongle identified, PN=%s peer=%s "
+                            "(now %d session(s): %s)",
+                            pn, peer_str, len(self._sessions), self.identified_pns,
                         )
                     else:
+                        if sess.pn:
+                            # Refresh last_seen so discovery liveness stays current.
+                            self.registry.record_seen(sess.pn, peer_str)
                         _LOGGER.debug(
                             "EyBond: heartbeat ack from %s (PN=%s)", peer_str, sess.pn
                         )
@@ -516,28 +692,28 @@ class EybondManager:
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("EyBond: session %s error: %s", peer_str, err)
         finally:
-            if self._hb_task and not self._hb_task.done():
-                self._hb_task.cancel()
+            if sess.hb_task and not sess.hb_task.done():
+                sess.hb_task.cancel()
                 try:
-                    await self._hb_task
+                    await sess.hb_task
                 except asyncio.CancelledError:
                     pass
-            self._hb_task = None
-            for fut in sess.pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("dongle disconnected"))
+            sess.hb_task = None
+            # Disconnecting one dongle must not affect the others. Drop only
+            # this session; the announcer keeps running for re-attach.
+            self._drop_session(sess, "dongle disconnected")
+            # Mark the dongle disconnected in discovery — unless its PN was
+            # already claimed by a same-PN reconnect (still mapped → live).
+            if sess.pn and sess.pn not in self._sessions_by_pn:
+                self.registry.mark_disconnected(sess.pn)
             try:
                 writer.close()
             except Exception:
                 pass
-            if self._session is sess:
-                self._session = None
-                self._session_ready.clear()
-            # Restart announcer so the dongle (or a new one) can re-attach.
-            if self._server is not None and (
-                self._announce_task is None or self._announce_task.done()
-            ):
-                self._announce_task = asyncio.create_task(self._announce_loop())
+            _LOGGER.debug(
+                "EyBond: session %s removed (%d session(s) remain: %s)",
+                peer_str, len(self._sessions), self.identified_pns,
+            )
 
     async def _heartbeat_loop(self, sess: _Session) -> None:
         try:
@@ -560,34 +736,59 @@ class EybondManager:
         except asyncio.CancelledError:
             pass
 
+    async def _wait_for_session(
+        self, pn: str | None, timeout: float, context: str, devaddr: int
+    ) -> _Session | None:
+        """Resolve the target session, waiting for a dongle if needed.
+
+        ``pn=None`` is the legacy single-dongle path: route to whichever
+        session is connected. A non-empty ``pn`` targets that specific
+        dongle and waits on its per-PN ready event.
+        """
+        if pn:
+            sess = self._sessions_by_pn.get(pn)
+            if sess is not None:
+                return sess
+            ev = self._ready_event_for(pn)
+        else:
+            sess = self._any_session()
+            if sess is not None:
+                return sess
+            ev = self._any_ready
+
+        wait = min(timeout, SESSION_WAIT_TIMEOUT)
+        _LOGGER.info(
+            "EyBond: no dongle connected yet, waiting up to %.1fs for %s "
+            "(pn=%s devaddr=%d) — UDP announcer is broadcasting",
+            wait, context or "frame", pn or "<any>", devaddr,
+        )
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=wait)
+        except TimeoutError:
+            _LOGGER.warning(
+                "EyBond: no dongle (pn=%s) within %.1fs, dropping %s devaddr=%d",
+                pn or "<any>", wait, context or "frame", devaddr,
+            )
+            return None
+        return self._sessions_by_pn.get(pn) if pn else self._any_session()
+
     async def send_frame(
-        self, devaddr: int, v_frame: bytes, timeout: float, context: str = ""
+        self,
+        devaddr: int,
+        v_frame: bytes,
+        timeout: float,
+        context: str = "",
+        pn: str | None = None,
     ) -> bytes | None:
-        """Send a raw frame via FC=4, return the response as bytes."""
+        """Send a raw frame via FC=4, return the response as bytes.
+
+        ``pn`` selects which connected dongle to target; ``None`` keeps the
+        legacy single-dongle behaviour (route to the only/first session).
+        """
         await self.ensure_started()
 
-        if self._session is None:
-            wait = min(timeout, SESSION_WAIT_TIMEOUT)
-            _LOGGER.info(
-                "EyBond: no dongle connected yet, waiting up to %.1fs for %s "
-                "(devaddr=%d) — UDP announcer is broadcasting",
-                wait, context or "frame", devaddr,
-            )
-            try:
-                await asyncio.wait_for(self._session_ready.wait(), timeout=wait)
-            except TimeoutError:
-                _LOGGER.warning(
-                    "EyBond: no dongle within %.1fs, dropping %s devaddr=%d",
-                    wait, context or "frame", devaddr,
-                )
-                return None
-
-        sess = self._session
+        sess = await self._wait_for_session(pn, timeout, context, devaddr)
         if sess is None:
-            _LOGGER.warning(
-                "EyBond: session vanished before sending %s devaddr=%d",
-                context or "frame", devaddr,
-            )
             return None
 
         async with sess.send_lock:
@@ -676,18 +877,61 @@ async def _get_manager(
                     mgr.broadcast = DEFAULT_BROADCAST
 
                 # Restart announcer so the new IP takes effect immediately.
+                # The announcer runs continuously in the multi-session model.
                 await mgr._stop_announcer()
-                if mgr._session is None and mgr._server is not None:
+                if mgr._server is not None:
                     mgr._announce_task = asyncio.create_task(mgr._announce_loop())
     await mgr.ensure_started()
     return mgr
 
 
+async def get_eybond_manager(
+    bind_host: str,
+    bind_port: int,
+    broadcast: str = DEFAULT_BROADCAST,
+    announce_ip: str | None = None,
+    registry: EybondRegistry | None = None,
+) -> EybondManager:
+    """Get/create the manager for a listener, optionally seeding its registry.
+
+    Used by the EyBond hub to start a listener whose discovery registry is
+    the hub's persisted one (so heartbeats populate it directly). If a
+    manager already exists for this port, the provided ``registry`` is
+    adopted only when the existing one is empty (no churn mid-run).
+    """
+    mgr = await _get_manager(bind_host, bind_port, broadcast, announce_ip)
+    if registry is not None and mgr.registry is not registry and len(mgr.registry) == 0:
+        mgr.registry = registry
+    return mgr
+
+
+async def shutdown_eybond_manager(bind_host: str, bind_port: int) -> None:
+    """Stop and drop a single listener (targeted hub unload)."""
+    async with _registry_lock:
+        mgr = _managers.pop((bind_host, bind_port), None)
+    if mgr is not None:
+        _LOGGER.info(
+            "EyBond: targeted shutdown of manager %s:%d", bind_host, bind_port
+        )
+        await mgr.shutdown()
+
+
 async def send_eybond_bytes(
-    device: str, v_frame: bytes, timeout: float = DEFAULT_TIMEOUT, context: str = ""
+    device: str,
+    v_frame: bytes,
+    timeout: float = DEFAULT_TIMEOUT,
+    context: str = "",
+    pn: str | None = None,
 ) -> bytes | None:
-    """Parse the URI, get/create the manager, send the raw frame."""
+    """Parse the URI, get/create the manager, send the raw frame.
+
+    ``pn`` optionally targets a specific dongle on a shared listener; when
+    ``None`` the legacy single-dongle routing is used.
+    """
     bind_host, bind_port, devaddr, broadcast, announce_ip = parse_eybond_uri(device)
+    if pn is None:
+        # Hub children carry their target dongle's PN in the URI query.
+        pn = _parse_pn_from_uri(device)
 
     _LOGGER.debug(
         "EyBond: dispatch frame %s for device=%s "
@@ -707,25 +951,35 @@ async def send_eybond_bytes(
                 bind_host, bind_port, err, int(BIND_FAILURE_BACKOFF),
             )
         return None
-    return await mgr.send_frame(devaddr, v_frame, timeout, context=context)
+    return await mgr.send_frame(devaddr, v_frame, timeout, context=context, pn=pn)
 
 
 async def send_eybond_voltronic(
-    device: str, command: str, timeout: float = DEFAULT_TIMEOUT, protocol: str | None = None
+    device: str,
+    command: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    protocol: str | None = None,
+    pn: str | None = None,
 ) -> bytes | None:
     """Backward-compatible wrapper for Voltronic/PI18 commands."""
     if protocol == PROTOCOL_PI18 or device.startswith("eybond-pi18://"):
         v_frame = build_request_frame(command)
     else:
         v_frame = build_pi30_frame(command)
-    return await send_eybond_bytes(device, v_frame, timeout, context=command)
+    return await send_eybond_bytes(device, v_frame, timeout, context=command, pn=pn)
 
 
 async def send_eybond_set_command(
-    device: str, command: str, timeout: float = 30.0, protocol: str | None = None
+    device: str,
+    command: str,
+    timeout: float = 30.0,
+    protocol: str | None = None,
+    pn: str | None = None,
 ) -> dict:
     """Send a set command and classify the ACK/NAK response."""
-    response = await send_eybond_voltronic(device, command, timeout, protocol=protocol)
+    response = await send_eybond_voltronic(
+        device, command, timeout, protocol=protocol, pn=pn
+    )
     if response is None:
         return {"error": "no response"}
     if b"ACK" in response or response.startswith(b"^1"):
