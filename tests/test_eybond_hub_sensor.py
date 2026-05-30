@@ -19,21 +19,14 @@ from custom_components.dess_monitor_local.sensors import (  # noqa: E402
 )
 
 
-class _Coord:
-    def __init__(self):
-        self.data = {}
-
-    def async_add_listener(self, *a, **k):
-        return lambda: None
-
-
 class _Entry:
     entry_id = "hub1"
     data = {"name": "Garage Hub"}
+    options = {}
 
 
 def _make(registry):
-    ent = mod.EybondHubDiscoverySensor(object(), _Coord(), _Entry())
+    ent = mod.EybondHubDiscoverySensor(object(), _Entry())
     # Point the sensor at our registry instead of the hass runtime.
     ent._registry = lambda: registry
     ent.async_write_ha_state = lambda: None
@@ -70,10 +63,10 @@ def test_notifies_only_for_new_unconfigured():
     with patch.object(mod.persistent_notification, "async_create") as create:
         # A brand-new unconfigured dongle appears.
         reg.record_seen("PN_NEW", "10.0.0.9:9")
-        ent._handle_coordinator_update()
+        ent._tick()
         assert create.call_count == 1
         # Idempotent: a second tick with no new PNs doesn't re-notify.
-        ent._handle_coordinator_update()
+        ent._tick()
         assert create.call_count == 1
 
 
@@ -86,7 +79,7 @@ def test_no_notify_for_enabled_new_device():
     reg.record_seen("PN_CFG", "10.0.0.5:5")
     reg.set_enabled("PN_CFG", True)
     with patch.object(mod.persistent_notification, "async_create") as create:
-        ent._handle_coordinator_update()
+        ent._tick()
         assert create.call_count == 0
 
 
@@ -96,5 +89,5 @@ def test_not_seeded_does_not_notify():
     reg.record_seen("PN_X", "10.0.0.7:7")
     # _seeded is False until async_added_to_hass runs.
     with patch.object(mod.persistent_notification, "async_create") as create:
-        ent._handle_coordinator_update()
+        ent._tick()
         assert create.call_count == 0

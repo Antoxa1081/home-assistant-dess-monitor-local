@@ -45,9 +45,7 @@ async def async_setup_entry(
     if config_entry.options.get(CONF_ENTRY_KIND) == ENTRY_KIND_EYBOND_HUB:
         from .sensors.eybond_hub_sensor import EybondHubDiscoverySensor
 
-        new_devices.append(
-            EybondHubDiscoverySensor(hass, hub.direct_coordinator, config_entry)
-        )
+        new_devices.append(EybondHubDiscoverySensor(hass, config_entry))
 
     for item in hub.items:
         # Per-item protocol (a hub may mix protocols across children); fall

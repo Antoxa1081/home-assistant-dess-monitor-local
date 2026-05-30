@@ -7,27 +7,37 @@ enabled, protocol). It also fires a one-shot persistent notification when a
 brand-new, still-unconfigured dongle appears, nudging the user to open the
 hub options and assign a protocol.
 
-The sensor reads the live discovery registry from the hub runtime on each
-coordinator tick (the hub coordinator ticks every update interval even with
-no enabled children), so no extra polling machinery is needed.
+Discovery state lives in the hub's registry, not in ``coordinator.data`` —
+and the hub coordinator runs with ``always_update=False``, so it would not
+fire when no child data changes. The sensor therefore refreshes on its own
+timer, reading the live registry from the hub runtime each tick.
 """
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
 
 from ..api.protocols.eybond_discovery import DongleStatus
-from ..const import CONF_NAME, DOMAIN
+from ..const import (
+    CONF_NAME,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+# Refresh cadence floor — discovery is cheap, but don't hammer the loop.
+_MIN_INTERVAL_S = 5
 
-class EybondHubDiscoverySensor(CoordinatorEntity, SensorEntity):
+
+class EybondHubDiscoverySensor(SensorEntity):
     """Number of dongles discovered on the hub, with a per-dongle list."""
 
     _attr_has_entity_name = True
@@ -35,12 +45,16 @@ class EybondHubDiscoverySensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:lan-connect"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "dongles"
+    _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, coordinator, config_entry) -> None:
-        super().__init__(coordinator)
+    def __init__(self, hass: HomeAssistant, config_entry) -> None:
         self._hass = hass
         self._entry_id = config_entry.entry_id
         self._hub_name = config_entry.data.get(CONF_NAME) or "EyBond Hub"
+        interval = int(
+            config_entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        )
+        self._interval = timedelta(seconds=max(_MIN_INTERVAL_S, interval))
         self._attr_unique_id = f"eybond_hub:{self._entry_id}:discovered"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, f"eybond_hub:{self._entry_id}")},
@@ -52,6 +66,7 @@ class EybondHubDiscoverySensor(CoordinatorEntity, SensorEntity):
         # async_added_to_hass so a restart doesn't re-notify existing dongles.
         self._known: set[str] = set()
         self._seeded = False
+        self._unsub = None
 
     def _registry(self):
         # Lazy import avoids a config_flow/__init__ import cycle.
@@ -94,10 +109,20 @@ class EybondHubDiscoverySensor(CoordinatorEntity, SensorEntity):
         if registry is not None:
             self._known = {r.pn for r in registry.all()}
         self._seeded = True
+        # Self-driven refresh: discovery isn't part of coordinator.data.
+        self._unsub = async_track_time_interval(
+            self._hass, self._tick, self._interval
+        )
 
-    def _handle_coordinator_update(self) -> None:
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub is not None:
+            self._unsub()
+            self._unsub = None
+
+    @callback
+    def _tick(self, now=None) -> None:
         self._maybe_notify_new()
-        super()._handle_coordinator_update()
+        self.async_write_ha_state()
 
     def _maybe_notify_new(self) -> None:
         if not self._seeded:
