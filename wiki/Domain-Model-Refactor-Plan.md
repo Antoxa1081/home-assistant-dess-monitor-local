@@ -213,11 +213,22 @@ This removes the bare-vs-`warn_` dual-convention merge.
 **Phase A — model + adapters (additive, behavior-preserving).**
 Define `api/model.py`. Implement `get_snapshot()` on every adapter natively.
 
-> Status: `api/model.py` done. **Modbus/SMG-II slice done** —
-> `smg2_to_snapshot()` builds the clean model (bus_voltage/battery_soc/scc/
-> status-bits/rated_* → `None`), `ModbusAdapter.get_snapshot()` caches it, and
-> `get_data` derives the legacy sections from `snapshot.raw` (golden test
-> proves byte-identical output). Remaining adapters: Voltronic, PI18, agent.
+> Status: **Phase A done** — `api/model.py` + `get_snapshot()` on all five
+> adapters (Modbus, Voltronic, PI18, agent, EyBond):
+> - Modbus/SMG-II: `smg2_to_snapshot()` (no fabrication); `get_data` derives
+>   the legacy sections from `snapshot.raw` (golden test = byte-identical).
+> - Voltronic: `voltronic_to_snapshot()` typed projection; full `WarningKey`
+>   set + `WarningKey.from_flags()`.
+> - PI18: `pi18_to_snapshot()` reuses Voltronic + adds PV2/MPPT temps/
+>   directions, drops PI18 fabrications.
+> - Agent: `agent_to_snapshot()` reuses Voltronic + merges qfws faults.
+> - EyBond: dispatches to the PI18/PI30 projection per scheme.
+>
+> `get_data` is unchanged for every protocol (no fabrication for the honest
+> ones; a `snapshot.raw` shim for Modbus), so entity behaviour is identical.
+> Deferred to later phases: status bits → `DeviceStatus`, and full PI18/agent
+> `warn_*` → `WarningKey` name reconciliation (Phase C, with the fault
+> summary). `BaseAdapter.get_snapshot` added in Phase B.
 
 Provide a transition shim `snapshot.to_legacy_sections() -> {qpigs, qpiri, ...}`
 that *reproduces today's output including the placeholders*, and make the old

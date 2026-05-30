@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 
 from ...const import PROTOCOL_PI18
-from ..decoders.pi18 import decode_pi18_response
-from ..decoders.voltronic import decode_direct_response
+from ..decoders.pi18 import decode_pi18_response, pi18_to_snapshot
+from ..decoders.voltronic import decode_direct_response, voltronic_to_snapshot
+from ..model import DeviceSnapshot
 from ..protocols.eybond_dongle import send_eybond_set_command, send_eybond_voltronic
 from .base import BaseAdapter
 
@@ -17,6 +18,26 @@ class EyBondAdapter(BaseAdapter):
         super().__init__(uri, timeout, strict_crc)
         self.is_pi18 = uri.startswith("eybond-pi18://")
         self.protocol = PROTOCOL_PI18 if self.is_pi18 else None
+
+    async def get_snapshot(self) -> DeviceSnapshot:
+        """Fetch the command set over the dongle and assemble the model,
+        using the PI18 or PI30 projection per the URI scheme."""
+        if self.is_pi18:
+            sections = {
+                "qpigs": await self.get_data("QPIGS"),
+                "qpiri": await self.get_data("QPIRI"),
+                "qmod": await self.get_data("QMOD"),
+                "qfws": await self.get_data("QFWS"),
+            }
+            return pi18_to_snapshot(sections)
+        sections = {
+            "qpigs": await self.get_data("QPIGS"),
+            "qpiri": await self.get_data("QPIRI"),
+            "qmod": await self.get_data("QMOD"),
+            "qpiws": await self.get_data("QPIWS"),
+            "qpigs2": await self.get_data("QPIGS2"),
+        }
+        return voltronic_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:
         response = await send_eybond_voltronic(

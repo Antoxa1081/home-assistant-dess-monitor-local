@@ -8,6 +8,8 @@ from ..decoders.enums import (
     OperatingMode,
     OutputSourcePrioritySetting,
 )
+from ..decoders.voltronic import voltronic_to_snapshot
+from ..model import DeviceSnapshot, WarningKey
 from ..protocols.agent_http import (
     AGENT_STALE_THRESHOLD_MS,
     fetch_agent_snapshot,
@@ -44,8 +46,38 @@ _CHARGER_PRIORITY_TO_AGENT: dict = {
     ChargeSourcePrioritySetting.SOLAR_AND_UTILITY: "SolarAndUtility",
 }
 
+def agent_to_snapshot(sections: dict) -> DeviceSnapshot:
+    """Map the agent's Voltronic-shaped sections onto the domain model.
+
+    The agent is faithful (no fabrication), so the shared mapping applies;
+    its faults live in the ``qfws`` section (``warn_*`` flags + numeric codes),
+    which is merged in on top of the base projection.
+    """
+    snap = voltronic_to_snapshot(sections)
+    qfws = sections.get("qfws") or {}
+    if qfws:
+        snap.faults.warnings |= WarningKey.from_flags(qfws)
+        snap.faults.fault_code = qfws.get("fault_code")
+        snap.faults.warning_code = qfws.get("warning_code")
+        snap.faults.fault_description = qfws.get("fault_description")
+    snap.raw = dict(sections)
+    return snap
+
+
 class AgentAdapter(BaseAdapter):
     """Adapter for solar-system-agent HTTP API."""
+
+    async def get_snapshot(self) -> DeviceSnapshot:
+        """Fetch the agent snapshot sections and assemble the domain model."""
+        sections = {
+            "qpigs": await self.get_data("QPIGS"),
+            "qpiri": await self.get_data("QPIRI"),
+            "qmod": await self.get_data("QMOD"),
+            "qpiws": await self.get_data("QPIWS"),
+            "qpigs2": await self.get_data("QPIGS2"),
+            "qfws": await self.get_data("QFWS"),
+        }
+        return agent_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:
         try:
