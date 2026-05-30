@@ -571,16 +571,18 @@ class DirectBatteryPowerSensor(DirectWattSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        qpigs = self.data.get('qpigs', {})
-        if not qpigs:
-            self._attr_native_value = None
-            self.async_write_ha_state()
-            return
-        try:
-            battery_charging_current = float(qpigs.get('battery_charging_current', 0))
-            battery_discharge_current = float(qpigs.get('battery_discharge_current', 0))
-            battery_voltage = float(qpigs.get('battery_voltage', 0))
-        except (TypeError, ValueError):
+        # Domain-model migration (Phase C): the signed battery power is built
+        # from the typed snapshot's charge / discharge magnitudes & voltage
+        # (or the legacy qpigs floats when no snapshot exists). Any missing
+        # input → unavailable, matching the old empty-qpigs guard.
+        battery_charging_current = self._metric('qpigs', 'battery_charging_current')
+        battery_discharge_current = self._metric('qpigs', 'battery_discharge_current')
+        battery_voltage = self._metric('qpigs', 'battery_voltage')
+        if (
+            battery_charging_current is None
+            or battery_discharge_current is None
+            or battery_voltage is None
+        ):
             self._attr_native_value = None
             self.async_write_ha_state()
             return
@@ -714,7 +716,10 @@ class DirectDeviceStatusSensor(DirectSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        qpigs = self.data["qpigs"]
+        # ``.get`` (not ``[]``) so a protocol without PI30 status bits — e.g.
+        # SMG-II once its fabricated qpigs is removed in Phase D — degrades to
+        # "OK"/empty instead of raising KeyError across the update fan-out.
+        qpigs = self.data.get("qpigs", {})
         flags = int(qpigs.get("device_status_bits_b7_b0", 0))
         if flags & DeviceStatusBitsB7B0.FAULT:
             self._attr_native_value = 'FAULT'
@@ -729,7 +734,7 @@ class DirectDeviceStatusSensor(DirectSensorBase):
 
     @property
     def extra_state_attributes(self):
-        qpigs = self.data["qpigs"]
+        qpigs = self.data.get("qpigs", {})
         bits = qpigs.get("device_status_bits_b7_b0", 0)
         attrs = parse_device_status_bits_b7_b0(bits)
         return attrs

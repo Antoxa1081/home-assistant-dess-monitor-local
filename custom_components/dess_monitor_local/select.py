@@ -123,6 +123,16 @@ class SelectBase(CoordinatorEntity, SelectEntity):
     def data(self):
         return self.coordinator.data[self._inverter_device.inverter_id]
 
+    @property
+    def snapshot(self):
+        """The protocol-neutral DeviceSnapshot for this inverter, or None.
+
+        Domain-model migration (Phase C): the priority read-backs prefer the
+        typed snapshot ratings over the legacy ``qpiri`` section.
+        """
+        snaps = getattr(self.coordinator, "snapshots", None) or {}
+        return snaps.get(self._inverter_device.inverter_id)
+
     # async def async_added_to_hass(self):
     #     """Run when this Entity has been added to HA."""
     #     # Sensors should also register callbacks to HA when their state changes
@@ -134,16 +144,26 @@ class SelectBase(CoordinatorEntity, SelectEntity):
     #     self._inverter_device.remove_callback(self.async_write_ha_state)
 
 
-def resolve_output_priority(device_data):
-    return device_data.get('qpiri').get('output_source_priority')
+def resolve_output_priority(device_data, snapshot=None):
+    if snapshot is not None:
+        p = snapshot.ratings.output_source_priority
+        return p.name if p is not None else None
+    return (device_data.get('qpiri') or {}).get('output_source_priority')
 
 
-def resolve_chrage_source_priority(device_data):
-    return device_data.get('qpiri').get('charger_source_priority')
+def resolve_chrage_source_priority(device_data, snapshot=None):
+    if snapshot is not None:
+        p = snapshot.ratings.charger_source_priority
+        return p.name if p is not None else None
+    return (device_data.get('qpiri') or {}).get('charger_source_priority')
 
 
-def resolve_max_utility_charging_current(device_data):
-    return device_data.get('qpiri').get('max_utility_charging_current')
+def resolve_max_utility_charging_current(device_data, snapshot=None):
+    # Deliberately stays on the legacy qpiri string: the raw textual format
+    # ("030" vs "30.0") is inspected downstream to choose the inverter's
+    # expected write format, which a typed snapshot float would discard.
+    # ``snapshot`` is accepted for call-site symmetry but ignored.
+    return (device_data.get('qpiri') or {}).get('max_utility_charging_current')
 
 
 class InverterOutputPrioritySelect(SelectBase):
@@ -157,23 +177,19 @@ class InverterOutputPrioritySelect(SelectBase):
 
         if coordinator.data is not None:
             data = coordinator.data[self._inverter_device.inverter_id]
-            # device_data = self._inverter_device.device_data
-            # print('device_data')
-            output_source_priority = resolve_output_priority(data)
+            output_source_priority = resolve_output_priority(data, self.snapshot)
             self._attr_current_option = output_source_priority
-            # self._attr_current_option = resolve_output_priority(data, device_data)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         data = self.coordinator.data[self._inverter_device.inverter_id]
-        # device_data = self._inverter_device.device_data
         mapper = {
             'UtilityFirst': 'UtilityFirst',
             'SBU': 'SBU',
             'Solar': 'Solar',
             'SolarFirst': 'Solar',
         }
-        priority = resolve_output_priority(data)
+        priority = resolve_output_priority(data, self.snapshot)
         mapped_priority = mapper.get(priority, priority)
         self._attr_current_option = mapped_priority
         self.async_write_ha_state()
@@ -203,12 +219,14 @@ class InverterChargeSourcePrioritySelect(SelectBase):
 
         if coordinator.data is not None:
             data = coordinator.data[self._inverter_device.inverter_id]
-            self._attr_current_option = resolve_chrage_source_priority(data)
+            self._attr_current_option = resolve_chrage_source_priority(
+                data, self.snapshot
+            )
 
     @callback
     def _handle_coordinator_update(self) -> None:
         data = self.coordinator.data[self._inverter_device.inverter_id]
-        self._attr_current_option = resolve_chrage_source_priority(data)
+        self._attr_current_option = resolve_chrage_source_priority(data, self.snapshot)
         self.async_write_ha_state()
 
     async def async_select_option(self, option: str):

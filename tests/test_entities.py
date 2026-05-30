@@ -555,3 +555,72 @@ class TestPI18ExtrasMigration:
         _neutralise_write(ent)
         ent._handle_coordinator_update()
         assert ent._attr_native_value == 118.3
+
+
+class TestRemainingQpigsConsumers:
+    """Phase C: the last legacy-qpigs/qpiri readers prefer the snapshot and
+    degrade gracefully when a protocol omits the section (Phase D prep)."""
+
+    def _snap(self, **metric_kwargs):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        return DeviceSnapshot(metrics=Metrics(**metric_kwargs))
+
+    def test_battery_power_from_snapshot(self):
+        # −22 A discharge × 27 V → −594 W, built from the signed snapshot.
+        snap = self._snap(battery_current=-22.0, battery_voltage=27.0)
+        ent = ds.DirectBatteryPowerSensor(_Dev(), _SnapCoord({"qpigs": {}}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == pytest.approx(-594.0)
+
+    def test_battery_power_legacy_fallback(self):
+        ent = ds.DirectBatteryPowerSensor(
+            _Dev(),
+            _Coord({"qpigs": {"battery_charging_current": "5",
+                              "battery_discharge_current": "0",
+                              "battery_voltage": "27"}}),
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == pytest.approx(135.0)
+
+    def test_device_status_sensor_survives_missing_qpigs(self):
+        # Phase D: SMG drops its fabricated qpigs → no KeyError, no crash.
+        ent = ds.DirectDeviceStatusSensor(_Dev(), _Coord({}))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "OK"
+        assert ent.extra_state_attributes is not None
+
+    def test_select_output_priority_from_snapshot(self):
+        from custom_components.dess_monitor_local import select as sel
+        from custom_components.dess_monitor_local.api.decoders.enums import (
+            OutputSourcePriority,
+        )
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Ratings,
+        )
+        snap = DeviceSnapshot(
+            ratings=Ratings(output_source_priority=OutputSourcePriority.SBU)
+        )
+        # Snapshot wins over the legacy qpiri string.
+        assert sel.resolve_output_priority(
+            {"qpiri": {"output_source_priority": "UtilityFirst"}}, snap
+        ) == "SBU"
+
+    def test_select_priority_legacy_fallback(self):
+        from custom_components.dess_monitor_local import select as sel
+        assert sel.resolve_chrage_source_priority(
+            {"qpiri": {"charger_source_priority": "SolarFirst"}}
+        ) == "SolarFirst"
+
+    def test_select_resolvers_crash_safe_without_qpiri(self):
+        from custom_components.dess_monitor_local import select as sel
+        # Phase D: SMG has no qpiri section → None, not AttributeError.
+        assert sel.resolve_output_priority({}) is None
+        assert sel.resolve_chrage_source_priority({}) is None
+        assert sel.resolve_max_utility_charging_current({}) is None
