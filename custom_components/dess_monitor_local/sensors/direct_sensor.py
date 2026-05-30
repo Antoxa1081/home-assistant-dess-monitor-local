@@ -92,6 +92,33 @@ class DirectSensorBase(CoordinatorEntity, SensorEntity):
         snaps = getattr(self.coordinator, "snapshots", None) or {}
         return snaps.get(self._inverter_device.inverter_id)
 
+    def _metric(self, section: str, key: str):
+        """Resolve a numeric metric value, preferring the typed snapshot.
+
+        Domain-model migration (Phase C group 5): the *derived* sensors
+        (energy integrators, vSoC, time-to-*) read their physical inputs —
+        battery voltage & currents, PV / output power, charge setpoints —
+        through this resolver instead of parsing the legacy section dict
+        directly. When a snapshot exists for the device the typed accessor
+        from ``_SNAPSHOT_FIELD`` wins (already ``float | None``); that is
+        what lets SMG-II / PI18 drop their fabricated legacy ``qpigs`` /
+        ``qpiri`` in Phase D. The caller's sanity gates (plausibility,
+        all-zeros, NaN) still apply to the resolved value. With no snapshot
+        it parses the legacy section float, so pre-migration behavior is
+        byte-identical. Returns ``None`` when absent or unparseable.
+        """
+        accessor = _SNAPSHOT_FIELD.get((section, key))
+        snap = self.snapshot if accessor is not None else None
+        if snap is not None:
+            return accessor(snap)
+        raw = self.data.get(section, {}).get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
 
 # Migration map (Phase C): legacy (section, key) → accessor on the snapshot.
 # Where an entry exists AND a snapshot is available, the typed snapshot value

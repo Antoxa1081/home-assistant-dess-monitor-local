@@ -383,3 +383,84 @@ class TestCapabilityGating:
         from custom_components.dess_monitor_local import sensor as sm
         summary = ds.DirectInverterFaultSummarySensor(_Dev(), _Coord({}))
         assert sm._supported(summary, "modbus") is True
+
+
+class TestSnapshotDerivedMigration:
+    """Phase C group 5: the derived energy / time-to-* sensors read their
+    physical inputs (battery currents & voltage, PV / output power) from the
+    typed snapshot, falling back to the legacy section when none exists."""
+
+    def _snap(self, **metric_kwargs):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        return DeviceSnapshot(metrics=Metrics(**metric_kwargs))
+
+    def test_battery_in_energy_uses_snapshot(self):
+        # Signed +5 A charge × 27 V = 135 W fed to the integrator. Legacy
+        # qpigs says something else — the snapshot wins.
+        snap = self._snap(battery_current=5.0, battery_voltage=27.0)
+        ent = des.DirectBatteryInEnergySensor(
+            _Dev(),
+            _SnapCoord(
+                {"qpigs": {"battery_charging_current": "999",
+                           "battery_voltage": "99"}},
+                snap,
+            ),
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._prev_power == pytest.approx(135.0)
+
+    def test_battery_out_energy_uses_snapshot(self):
+        # Signed −22 A → 22 A discharge × 27 V = 594 W.
+        snap = self._snap(battery_current=-22.0, battery_voltage=27.0)
+        ent = des.DirectBatteryOutEnergySensor(
+            _Dev(),
+            _SnapCoord({"qpigs": {"battery_discharge_current": "0",
+                                  "battery_voltage": "0"}}, snap),
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._prev_power == pytest.approx(594.0)
+
+    def test_battery_in_charge_zero_when_discharging(self):
+        # Discharging: derived charge current is 0 → integrator power 0.
+        snap = self._snap(battery_current=-10.0, battery_voltage=27.0)
+        ent = des.DirectBatteryInEnergySensor(_Dev(), _SnapCoord({}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._prev_power == 0.0
+
+    def test_time_to_full_reads_charge_from_snapshot(self):
+        # SoC 50 %, 100 Ah, +10 A charge from the snapshot → 5 h.
+        snap = self._snap(battery_current=10.0, battery_voltage=27.0)
+        ent = des.DirectBatteryTimeToFullSensor(
+            _Dev(), _SnapCoord({"qpigs": {}}, snap), _StubSoc(50.0, 100.0)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == pytest.approx(5.0, abs=0.01)
+
+    def test_energy_legacy_fallback_without_snapshot(self):
+        # No snapshot → parse the legacy section exactly as before.
+        ent = des.DirectBatteryInEnergySensor(
+            _Dev(),
+            _Coord({"qpigs": {"battery_charging_current": "5",
+                              "battery_voltage": "27"}}),
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._prev_power == pytest.approx(135.0)
+
+    def test_smg_style_no_bus_but_battery_energy_works(self):
+        # SMG-II: bus_voltage None, but real battery fields → energy still
+        # accumulates (the no-fabrication goal doesn't break derived sensors).
+        snap = self._snap(
+            battery_current=-22.0, battery_voltage=27.0, bus_voltage=None,
+        )
+        ent = des.DirectBatteryOutEnergySensor(_Dev(), _SnapCoord({}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._prev_power == pytest.approx(594.0)

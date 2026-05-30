@@ -144,12 +144,9 @@ class DirectEnergySensorBase(RestoreSensor, DirectTypedSensorBase):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Каждое обновление координатора — берём свежую мощность и накапливаем энергию."""
-        section = self.data.get(self.data_section, {})
-        raw = section.get(self.data_key)
-        try:
-            power = float(raw)
-        except (TypeError, ValueError):
-            power = None
+        # Prefer the typed snapshot power (pv1 / output active / apparent);
+        # falls back to the legacy section float when no snapshot exists.
+        power = self._metric(self.data_section, self.data_key)
 
         # Sanity-bound: a single sample within the trapezoidal step-guard's
         # 50 kW ceiling but still wildly above this inverter's actual rating
@@ -207,23 +204,32 @@ class DirectPV2EnergySensor(DirectEnergySensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        try:
-            sec = self.data["qpigs2"]
-            current = float(sec["pv_current"])
-            voltage = float(sec["pv_voltage"])
-        except (KeyError, ValueError, TypeError):
-            self._prev_power = None
-            self._prev_ts = time.monotonic()
-            self.async_write_ha_state()
-            return
+        snap = self.snapshot
+        if snap is not None:
+            # Typed second-MPPT power; None when this device has no PV2.
+            pv2 = snap.metrics.pv2
+            power = pv2.power if pv2 is not None else None
+            if power is None:
+                self._prev_power = None
+                self._prev_ts = time.monotonic()
+                self.async_write_ha_state()
+                return
+        else:
+            try:
+                sec = self.data["qpigs2"]
+                current = float(sec["pv_current"])
+                voltage = float(sec["pv_voltage"])
+            except (KeyError, ValueError, TypeError):
+                self._prev_power = None
+                self._prev_ts = time.monotonic()
+                self.async_write_ha_state()
+                return
+            power = current * voltage
 
-        power = current * voltage
         if not is_plausible_power(power):
             _LOGGER.debug(
-                "%s: implausible PV2 reading (I=%.2f A, V=%.2f V, P=%.1f W); dropping sample",
+                "%s: implausible PV2 reading (P=%.1f W); dropping sample",
                 self.entity_id or self._attr_unique_id,
-                current,
-                voltage,
                 power,
             )
             self._prev_power = None
@@ -278,26 +284,22 @@ class DirectBatteryInEnergySensor(DirectEnergySensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        qpigs = self.data.get("qpigs", {})
-
         try:
-            current_raw = qpigs.get("battery_charging_current")
-            # Use the live terminal voltage from QPIGS, not the static
-            # bulk_charging_voltage setpoint from QPIRI. Reasons:
+            # Use the live terminal voltage (QPIGS / metrics.battery_voltage),
+            # not the static bulk_charging_voltage setpoint from QPIRI:
             #  - Physical correctness: P = I × V_live. The bulk setpoint
             #    (e.g. 28.4 V) overstates power during bulk-rise (V_live
             #    is 26-28 V) and understates during float (V_live ~27.2 V).
-            #  - Reliability: qpiri can be empty for a tick after a CRC
-            #    fail / coordinator freeze, while qpigs already has the
-            #    full reading. Reading both forced the sensor to drop
-            #    valid charge samples whenever qpiri momentarily lagged,
-            #    causing Battery IN Energy to chronically undercount vs
-            #    Battery OUT (round-trip > 100% in the stats).
-            voltage_raw = qpigs.get("battery_voltage")
-            if current_raw is None or voltage_raw is None:
+            #  - Reliability: ratings can lag for a tick after a CRC fail /
+            #    coordinator freeze, while metrics already has the full
+            #    reading. Reading both forced the sensor to drop valid
+            #    charge samples whenever ratings momentarily lagged, causing
+            #    Battery IN Energy to chronically undercount vs Battery OUT
+            #    (round-trip > 100% in the stats).
+            current = self._metric("qpigs", "battery_charging_current")
+            voltage = self._metric("qpigs", "battery_voltage")
+            if current is None or voltage is None:
                 raise ValueError("no data")
-            current = float(current_raw)
-            voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
             # All-zeros == bridge offline / empty payload — skip silently.
@@ -340,14 +342,11 @@ class DirectBatteryOutEnergySensor(DirectEnergySensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        qpigs = self.data.get("qpigs", {})
         try:
-            current_raw = qpigs.get("battery_discharge_current")
-            voltage_raw = qpigs.get("battery_voltage")
-            if current_raw is None or voltage_raw is None:
+            current = self._metric("qpigs", "battery_discharge_current")
+            voltage = self._metric("qpigs", "battery_voltage")
+            if current is None or voltage is None:
                 raise ValueError("no data")
-            current = float(current_raw)
-            voltage = float(voltage_raw)
             if math.isnan(current) or math.isnan(voltage):
                 raise ValueError("NaN")
             # All-zeros == bridge offline / empty payload — skip silently.
@@ -575,13 +574,9 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         self.async_write_ha_state()
 
     def get_bulk_charging_voltage(self) -> float | None:
-        try:
-            qpiri = self.data.get("qpiri", {})
-            voltage = float(qpiri.get("bulk_charging_voltage"))
-            if voltage > 0:
-                return voltage
-        except (KeyError, ValueError, TypeError):
-            pass
+        voltage = self._metric("qpiri", "bulk_charging_voltage")
+        if voltage is not None and voltage > 0:
+            return voltage
         return None
 
     def get_full_charge_sync_voltage(self) -> float | None:
@@ -667,13 +662,9 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         )
 
     def get_floating_charging_voltage(self) -> float | None:
-        try:
-            qpiri = self.data.get("qpiri", {})
-            voltage = float(qpiri.get("float_charging_voltage"))
-            if voltage > 0:
-                return voltage
-        except (KeyError, ValueError, TypeError):
-            pass
+        voltage = self._metric("qpiri", "float_charging_voltage")
+        if voltage is not None and voltage > 0:
+            return voltage
         return None
 
     @property
@@ -724,17 +715,10 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
         (some inverters emit 0 or 100 as placeholders before the BMS
         finishes handshake).
         """
-        try:
-            section = self.data.get(self.data_section, {})
-            raw = section.get("battery_capacity")
-            if raw is None or raw == "":
-                return None
-            value = float(raw)
-            if math.isnan(value):
-                return None
-            return max(0.0, min(100.0, value))
-        except (KeyError, ValueError, TypeError):
+        value = self._metric(self.data_section, "battery_capacity")
+        if value is None or math.isnan(value):
             return None
+        return max(0.0, min(100.0, value))
 
     @property
     def native_value(self):
@@ -742,11 +726,18 @@ class DirectBatteryStateOfChargeSensor(RestoreSensor, DirectTypedSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        section = self.data.get(self.data_section, {})
         try:
-            current_voltage = float(section.get("battery_voltage", 0))
-            charging_current = float(section.get("battery_charging_current", 0))
-            discharging_current = float(section.get("battery_discharge_current", 0))
+            # ``_metric`` returns the typed snapshot value (signed current is
+            # exposed as its charge / discharge magnitudes) or the legacy
+            # float; missing → None, coerced to 0.0 to match the historical
+            # ``section.get(key, 0)`` default.
+            current_voltage = self._metric(self.data_section, "battery_voltage") or 0.0
+            charging_current = (
+                self._metric(self.data_section, "battery_charging_current") or 0.0
+            )
+            discharging_current = (
+                self._metric(self.data_section, "battery_discharge_current") or 0.0
+            )
             # Signed: + charging, − discharging. Both fields shouldn't be
             # non-zero simultaneously per protocol — but if they are, the
             # net direction is what we want.
@@ -801,11 +792,8 @@ class _TimeEstimateBase(DirectSensorBase):
         self._soc_sensor = soc_sensor
 
     def _read_current_a(self, key: str) -> float:
-        try:
-            section = self.data.get("qpigs", {})
-            return float(section.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            return 0.0
+        value = self._metric("qpigs", key)
+        return value if value is not None else 0.0
 
 
 class DirectBatteryTimeToFloorSensor(_TimeEstimateBase):
@@ -949,15 +937,10 @@ class DirectBatteryBackupTimeSensor(_TimeEstimateBase):
         capacity_ah = self._soc_sensor.capacity_ah
         target = self._read_target_floor()
 
-        try:
-            section = self.data.get("qpigs", {})
-            load_w = float(section.get("output_active_power", 0) or 0)
-            pv_w = float(section.get("pv_charging_power", 0) or 0)
-            v_bat = float(section.get("battery_voltage", 0) or 0)
-        except (TypeError, ValueError):
-            self._attr_native_value = None
-            self.async_write_ha_state()
-            return
+        # Typed snapshot values (or legacy float fallback); missing → 0.0.
+        load_w = self._metric("qpigs", "output_active_power") or 0.0
+        pv_w = self._metric("qpigs", "pv_charging_power") or 0.0
+        v_bat = self._metric("qpigs", "battery_voltage") or 0.0
 
         # Net power the battery would have to supply if the grid dropped
         # right now. PV stays online during grid outage on hybrid systems,
