@@ -33,13 +33,18 @@ from .decoders.enums import (
 class WarningKey(StrEnum):
     """Canonical, protocol-neutral warning identifiers.
 
-    Adapters map their native faults onto this set. The value equals the
-    legacy flag key, so ``WarningKey(key)`` maps a decoded flag straight in.
-    The members below are the PI30 QPIWS set (the broadest); PI18/agent
-    ``warn_*`` flags map onto the same members as those adapters migrate.
+    The union of every warning any adapter can report. The value equals the
+    canonical (PI30-style) flag key, so ``WarningKey(key)`` maps a decoded
+    flag straight in. Members are grouped by origin:
+
+    - the PI30 QPIWS set (the common base, bare names);
+    - agent-only extras (temperatures, parallel-system, grid, sensor bias)
+      whose ``warn_*`` names already match these canonical values;
+    - PI18 QFWS warnings, whose native names differ (``fan_lock`` vs
+      ``fan_locked`` etc.) and are canonicalised via ``_FLAG_ALIASES``.
     """
 
-    # PI30 QPIWS warnings/faults
+    # PI30 QPIWS warnings/faults (bare names)
     INVERTER_FAULT = "inverter_fault"
     BUS_OVER = "bus_over"
     BUS_UNDER = "bus_under"
@@ -68,22 +73,69 @@ class WarningKey(StrEnum):
     MPPT_OVERLOAD_WARNING = "mppt_overload_warning"
     BATTERY_TOO_LOW_TO_CHARGE = "battery_too_low_to_charge"
 
+    # Agent-only extras (names already canonical)
+    FAULT_ACTIVE = "fault_active"
+    BATTERY_OVER_CURRENT = "battery_over_current"
+    INVERTER_NEGATIVE_POWER = "inverter_negative_power"
+    INVERTER_OVER_TEMPERATURE = "inverter_over_temperature"
+    DCDC_OVER_TEMPERATURE = "dcdc_over_temperature"
+    PV_OVER_TEMPERATURE = "pv_over_temperature"
+    BATTERY_TYPE_INCOMPATIBLE = "battery_type_incompatible"
+    PV_LOW_VOLTAGE = "pv_low_voltage"
+    PV_OVER_CURRENT = "pv_over_current"
+    MAINS_LOW_FREQUENCY = "mains_low_frequency"
+    MAINS_OVER_FREQUENCY = "mains_over_frequency"
+    MAINS_WAVEFORM_ABNORMAL = "mains_waveform_abnormal"
+    PARALLEL_HOST_LOST = "parallel_host_lost"
+    PARALLEL_SYNC_ABNORMAL = "parallel_sync_abnormal"
+    PARALLEL_BATTERY_DIFF = "parallel_battery_diff"
+    PARALLEL_MODE_INCONSISTENT = "parallel_mode_inconsistent"
+    PARALLEL_VERSION_INCOMPATIBLE = "parallel_version_incompatible"
+    PARALLEL_COMM_INTERRUPTED = "parallel_comm_interrupted"
+    BATTERY_EQ_CHARGING = "battery_eq_charging"
+    PV_ENERGY_LOW = "pv_energy_low"
+    BATTERY_CURRENT_BIAS = "battery_current_bias"
+    INVERTER_CURRENT_BIAS = "inverter_current_bias"
+    OUTPUT_CURRENT_BIAS = "output_current_bias"
+    PV_CURRENT_BIAS = "pv_current_bias"
+
     @classmethod
     def from_flags(cls, flags: dict) -> set[WarningKey]:
         """Active canonical warnings from a decoded ``{flag: bool}`` dict.
 
-        Accepts both the bare PI30 keys and ``warn_``-prefixed PI18/agent
-        keys; unknown keys are ignored.
+        Accepts bare PI30 keys, ``warn_``-prefixed PI18/agent keys, and the
+        PI18 native spellings (``warn_fan_lock`` etc.), canonicalising the
+        latter via ``_FLAG_ALIASES``. Unknown keys are ignored.
         """
         out: set[WarningKey] = set()
         for key, value in flags.items():
             if not value:
                 continue
             name = key[5:] if key.startswith("warn_") else key
+            name = _FLAG_ALIASES.get(name, name)
             member = cls._value2member_map_.get(name)
             if member is not None:
                 out.add(member)
         return out
+
+
+# PI18 QFWS native warning spellings → canonical WarningKey values. PI18 names
+# a handful of warnings differently from the PI30/agent canon (and splits a few
+# that the canon keeps merged, e.g. per-SCC / per-MPPT), so map them explicitly
+# rather than letting ``from_flags`` silently drop them.
+_FLAG_ALIASES: dict[str, str] = {
+    "output_short": "opv_short",
+    "fan_lock": "fan_locked",
+    "battery_low": "battery_low_alarm",
+    "battery_under": "battery_under_shutdown",
+    "eeprom_fail": "eeprom_fault",
+    "pv1_voltage_high": "pv_voltage_high",
+    "pv2_voltage_high": "pv_voltage_high",
+    "mppt1_overload": "mppt_overload_fault",
+    "mppt2_overload": "mppt_overload_fault",
+    "battery_too_low_scc1": "battery_too_low_to_charge",
+    "battery_too_low_scc2": "battery_too_low_to_charge",
+}
 
 
 @dataclass(frozen=True)
