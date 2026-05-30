@@ -34,6 +34,7 @@ from custom_components.dess_monitor_local.api.decoders.enums import (
     PI18LinePowerDirection,
     PI18MPPTStatus,
 )
+from custom_components.dess_monitor_local.api.model import WarningKey
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
 from custom_components.dess_monitor_local.sanity import (
@@ -903,8 +904,56 @@ class DirectInverterFaultSummarySensor(DirectSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        flags = self._merged_warnings()
+        # Domain-model migration (Phase C group 3): the typed snapshot's
+        # Faults bucket is the canonical source — it already canonicalises
+        # PI18's variant warning spellings and unions the agent extras, so
+        # the severity walk and the per-flag attributes are protocol-neutral.
+        # Falls back to the legacy merged qpiws/qfws dict when no snapshot
+        # exists (behaviour unchanged on that path).
+        snapshot = self.snapshot
+        if snapshot is not None:
+            self._update_from_faults(snapshot.faults)
+        else:
+            self._update_from_legacy_flags(self._merged_warnings())
 
+    def _update_from_faults(self, faults) -> None:
+        """State + attributes from the typed Faults bucket."""
+        if faults.fault_code:
+            self._attr_native_value = (
+                f"Fault: {faults.fault_description or faults.fault_code}"
+            )
+        elif faults.warning_code:
+            self._attr_native_value = (
+                f"Warning: SMG-II code 0x{int(faults.warning_code):08X}"
+            )
+        else:
+            active = faults.warnings
+            # First active warning in severity order (StrEnum compares equal
+            # to its bare value, so the str base-name tests set membership).
+            first_active = next(
+                (
+                    display
+                    for base, display in _WARNING_SEVERITY_ORDER
+                    if base in active
+                ),
+                None,
+            )
+            total = len(active)
+            if total == 0:
+                self._attr_native_value = "OK"
+            elif first_active is None:
+                self._attr_native_value = f"Warning: {total} active"
+            elif total > 1:
+                self._attr_native_value = (
+                    f"Warning: {first_active} (+{total - 1} more)"
+                )
+            else:
+                self._attr_native_value = f"Warning: {first_active}"
+
+        self._attr_extra_state_attributes = _faults_attrs(faults)
+        self.async_write_ha_state()
+
+    def _update_from_legacy_flags(self, flags: dict) -> None:
         # PI18 / SMG-II carry an explicit fault_code — if non-zero, it
         # takes absolute priority over individual warning bits because
         # it represents an active hardware fault. SMG-II additionally
@@ -993,6 +1042,26 @@ def _flag_attrs(flags: dict) -> dict:
             # — pass through verbatim.
             attrs[key] = value
     attrs["active_count"] = active
+    return attrs
+
+
+def _faults_attrs(faults) -> dict:
+    """Attribute dict for the fault summary from the typed Faults bucket.
+
+    Every canonical WarningKey is exposed as a boolean (HA renders these as
+    on/off), so automations get a stable, protocol-neutral attribute set —
+    for PI30 the names are identical to the legacy bare flags; PI18/agent
+    now report the canonical names instead of their raw warn_* spellings.
+    ``active_count`` plus the explicit fault/warning codes round it out.
+    """
+    attrs: dict = {key.value: (key in faults.warnings) for key in WarningKey}
+    attrs["active_count"] = len(faults.warnings)
+    if faults.fault_code:
+        attrs["fault_code"] = faults.fault_code
+    if faults.fault_description:
+        attrs["fault_description"] = faults.fault_description
+    if faults.warning_code:
+        attrs["warning_code"] = faults.warning_code
     return attrs
 
 

@@ -33,6 +33,17 @@ from custom_components.dess_monitor_local.coordinators.direct_coordinator import
 )
 from custom_components.dess_monitor_local.hub import InverterDevice
 
+
+def _device_snapshot(coordinator, inverter_id):
+    """The protocol-neutral DeviceSnapshot for ``inverter_id``, or None.
+
+    Domain-model migration (Phase C group 3): the warning binary sensors
+    prefer the typed ``snapshot.faults`` over the legacy qpiws/qfws dicts.
+    """
+    snaps = getattr(coordinator, "snapshots", None) or {}
+    return snaps.get(inverter_id)
+
+
 # (status-key, sensor-suffix, human name, device_class). The parser
 # normalises bits to True/False, so we just look them up by key.
 _B7_B0_FLAGS: tuple[tuple[str, str, str, BinarySensorDeviceClass | None], ...] = (
@@ -244,8 +255,17 @@ class _WarningFlagBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        # Accept either naming convention: bare (PI30 QPIWS) or
-        # warn_-prefixed (PI18 QFWS + agent postgen). Whichever is
+        snapshot = _device_snapshot(
+            self.coordinator, self._inverter_device.inverter_id
+        )
+        if snapshot is not None:
+            # ``flag_key`` is a canonical WarningKey value; PI18's variant
+            # spellings were already canonicalised into faults.warnings.
+            self._attr_is_on = self._flag_key in snapshot.faults.warnings
+            self.async_write_ha_state()
+            return
+        # Legacy fallback: accept either naming convention — bare (PI30
+        # QPIWS) or warn_-prefixed (PI18 QFWS + agent postgen). Whichever is
         # populated wins. None only if neither is present at all.
         bare = self._flags.get(self._flag_key)
         prefixed = self._flags.get(f"warn_{self._flag_key}")
@@ -292,6 +312,15 @@ class _AnyWarningBinarySensor(CoordinatorEntity, BinarySensorEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
+        snapshot = _device_snapshot(
+            self.coordinator, self._inverter_device.inverter_id
+        )
+        if snapshot is not None:
+            # any == any canonical warning, fault_code, or warning_code set.
+            self._attr_is_on = snapshot.faults.any
+            self.async_write_ha_state()
+            return
+
         try:
             dev = self.coordinator.data[self._inverter_device.inverter_id]
         except (KeyError, TypeError):

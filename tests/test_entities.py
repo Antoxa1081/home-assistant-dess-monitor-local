@@ -624,3 +624,94 @@ class TestRemainingQpigsConsumers:
         assert sel.resolve_output_priority({}) is None
         assert sel.resolve_chrage_source_priority({}) is None
         assert sel.resolve_max_utility_charging_current({}) is None
+
+
+class TestFaultSnapshotMigration:
+    """Phase C group 3: the fault summary + warning binary sensors read the
+    typed snapshot.faults (canonical, PI18-spelling-corrected) when present."""
+
+    def _faults(self, **kwargs):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Faults,
+        )
+        return DeviceSnapshot(faults=Faults(**kwargs))
+
+    def _from_flags(self, flags):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Faults,
+            WarningKey,
+        )
+        return DeviceSnapshot(faults=Faults(warnings=WarningKey.from_flags(flags)))
+
+    # --- fault summary ---
+    def test_summary_single_warning_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.model import WarningKey
+        snap = self._faults(warnings={WarningKey.OVERLOAD})
+        # Legacy says clear; the snapshot wins.
+        ent = ds.DirectInverterFaultSummarySensor(
+            _Dev(), _SnapCoord({"qpiws": {"overload": False}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Warning: Overload"
+
+    def test_summary_fault_code_priority_from_snapshot(self):
+        snap = self._faults(fault_code=2, fault_description="Over temperature")
+        ent = ds.DirectInverterFaultSummarySensor(_Dev(), _SnapCoord({}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Fault: Over temperature"
+
+    def test_summary_pi18_spelling_now_surfaces(self):
+        # The headline bug this group fixes: PI18 warn_fan_lock used to be
+        # dropped; via the snapshot it now surfaces as the canonical warning.
+        snap = self._from_flags({"warn_fan_lock": True})
+        ent = ds.DirectInverterFaultSummarySensor(_Dev(), _SnapCoord({}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Warning: Fan Locked"
+
+    def test_summary_attributes_canonical(self):
+        from custom_components.dess_monitor_local.api.model import WarningKey
+        snap = self._faults(warnings={WarningKey.OVERLOAD})
+        ent = ds.DirectInverterFaultSummarySensor(_Dev(), _SnapCoord({}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        attrs = ent._attr_extra_state_attributes
+        assert attrs["overload"] is True
+        assert attrs["fan_locked"] is False
+        assert attrs["active_count"] == 1
+
+    def test_summary_ok_when_empty(self):
+        ent = ds.DirectInverterFaultSummarySensor(_Dev(), _SnapCoord({}, self._faults()))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "OK"
+
+    # --- warning binary sensors ---
+    def test_warning_flag_sensor_pi18_fix(self):
+        # fan_locked binary sensor turns on for PI18 (warn_fan_lock) via the
+        # canonical snapshot set — the legacy path missed this.
+        snap = self._from_flags({"warn_fan_lock": True})
+        ent = bs._WarningFlagBinarySensor(
+            _Dev(), _SnapCoord({}, snap),
+            flag_key="fan_locked", sensor_suffix="fan_locked",
+            name="Fan Locked", device_class=None,
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_is_on is True
+
+    def test_any_warning_from_snapshot(self):
+        snap_on = self._faults(fault_code=5)
+        ent = bs._AnyWarningBinarySensor(_Dev(), _SnapCoord({}, snap_on))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_is_on is True
+
+        ent2 = bs._AnyWarningBinarySensor(_Dev(), _SnapCoord({}, self._faults()))
+        _neutralise_write(ent2)
+        ent2._handle_coordinator_update()
+        assert ent2._attr_is_on is False
