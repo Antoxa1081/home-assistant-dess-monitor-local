@@ -15,7 +15,15 @@ from ..crc import crc16_modbus
 from ..decoders.enums import (
     ACInputVoltageRange,
     ChargerSourcePriority,
+    OperatingMode,
     OutputSourcePriority,
+)
+from ..model import (
+    DeviceSnapshot,
+    Faults,
+    Metrics,
+    PvInput,
+    Ratings,
 )
 
 UNIT_ID = 1
@@ -474,3 +482,105 @@ def smg2_to_qpiri(c: dict) -> dict:
         "reserved_b": "0",
         "reserved_ccc": "0",
     }
+
+
+# ---------------------------------------------------------------------------
+# Protocol-neutral domain model projection (no fabrication — fields the
+# SMG-II doesn't expose are left None). See wiki/Domain-Model-Refactor-Plan.md.
+# ---------------------------------------------------------------------------
+_SMG_MODE_TO_OPERATING = {
+    "Power On": OperatingMode.PowerOn,
+    "Standby": OperatingMode.Standby,
+    "Mains": OperatingMode.Line,
+    "Off-Grid": OperatingMode.Battery,
+    "Bypass": OperatingMode.Line,
+    "Charging": OperatingMode.Line,
+    "Fault": OperatingMode.Fault,
+}
+_SMG_OUTPUT_PRIORITY = {
+    0: OutputSourcePriority.UtilityFirst,
+    1: OutputSourcePriority.SolarFirst,
+    2: OutputSourcePriority.SBU,
+}
+_SMG_CHARGER_PRIORITY = {
+    0: ChargerSourcePriority.UtilityFirst,
+    1: ChargerSourcePriority.SolarFirst,
+    2: ChargerSourcePriority.SolarAndUtility,
+    3: ChargerSourcePriority.OnlySolar,
+}
+
+
+def _f(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def smg2_to_snapshot(sensors: dict, config: dict, faults: dict) -> DeviceSnapshot:
+    """Map SMG-II's three register blocks onto the neutral domain model.
+
+    Unlike :func:`smg2_to_qpigs` / :func:`smg2_to_qpiri`, nothing is
+    fabricated: registers the SMG-II lacks (bus voltage, battery SoC, SCC
+    mirror, status bits, nameplate ratings) are ``None``.
+    """
+    s, c, fa = sensors, config, faults or {}
+
+    metrics = Metrics(
+        mode=_SMG_MODE_TO_OPERATING.get(s.get("operation_mode")),
+        grid_voltage=_f(s.get("mains_voltage")),
+        grid_frequency=_f(s.get("mains_frequency")),
+        grid_power=_f(s.get("mains_power")),
+        ac_output_voltage=_f(s.get("output_voltage")),
+        ac_output_frequency=_f(s.get("output_frequency")),
+        ac_output_active_power=_f(s.get("output_active_power")),
+        ac_output_apparent_power=None,          # SMG-II has no apparent-power register
+        load_percent=_f(s.get("load_percent")),
+        bus_voltage=None,                       # no register
+        battery_voltage=_f(s.get("battery_voltage")),
+        battery_current=_f(s.get("battery_current")),   # signed
+        battery_power=_f(s.get("battery_power")),       # signed
+        battery_soc=None,                       # no register (was hardcoded 100%)
+        scc_battery_voltage=None,               # no SCC mirror
+        pv1=PvInput(
+            voltage=_f(s.get("pv_voltage")),
+            current=_f(s.get("pv_current")),
+            power=_f(s.get("pv_power")),
+        ),
+        pv2=None,
+        temp_heatsink=_f(s.get("temp_inverter")),
+        temp_dcdc=_f(s.get("temp_dcdc")),
+    )
+
+    ratings = Ratings(
+        bulk_charging_voltage=_f(c.get("max_charge_voltage")),
+        float_charging_voltage=_f(c.get("float_charge_voltage")),
+        low_battery_to_bypass_voltage=_f(c.get("battery_low_protection_mains")),
+        shutdown_battery_voltage=_f(c.get("battery_low_protection_offgrid")),
+        high_battery_to_battery_mode_voltage=_f(
+            c.get("battery_discharge_recovery_mains")
+        ),
+        max_charging_current=_f(c.get("max_charging_current")),
+        max_utility_charging_current=_f(c.get("max_mains_charging_current")),
+        ac_input_voltage_range=(
+            ACInputVoltageRange.UPS
+            if c.get("input_voltage_range") == 1
+            else ACInputVoltageRange.Appliance
+        ),
+        output_source_priority=_SMG_OUTPUT_PRIORITY.get(c.get("output_priority")),
+        charger_source_priority=_SMG_CHARGER_PRIORITY.get(
+            c.get("battery_charging_priority")
+        ),
+        # rated_*, battery_type, parallel_* are unknown for SMG-II → None
+    )
+
+    flt = Faults(
+        fault_code=fa.get("fault_code"),
+        warning_code=fa.get("warning_code"),
+        fault_description=fa.get("fault_description"),
+    )
+
+    return DeviceSnapshot(
+        metrics=metrics,
+        ratings=ratings,
+        faults=flt,
+        capabilities={"grid_power", "dcdc_temp"},
+        raw={"sensors": s, "config": c, "faults": fa},
+    )

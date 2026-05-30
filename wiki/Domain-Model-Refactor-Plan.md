@@ -212,6 +212,13 @@ This removes the bare-vs-`warn_` dual-convention merge.
 
 **Phase A — model + adapters (additive, behavior-preserving).**
 Define `api/model.py`. Implement `get_snapshot()` on every adapter natively.
+
+> Status: `api/model.py` done. **Modbus/SMG-II slice done** —
+> `smg2_to_snapshot()` builds the clean model (bus_voltage/battery_soc/scc/
+> status-bits/rated_* → `None`), `ModbusAdapter.get_snapshot()` caches it, and
+> `get_data` derives the legacy sections from `snapshot.raw` (golden test
+> proves byte-identical output). Remaining adapters: Voltronic, PI18, agent.
+
 Provide a transition shim `snapshot.to_legacy_sections() -> {qpigs, qpiri, ...}`
 that *reproduces today's output including the placeholders*, and make the old
 `get_data(cmd)` return `to_legacy_sections()[section]`. Result: one snapshot

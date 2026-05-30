@@ -10,6 +10,11 @@ import pytest
 
 from custom_components.dess_monitor_local.api.adapters import modbus as modadapter
 from custom_components.dess_monitor_local.api.crc import crc16_modbus
+from custom_components.dess_monitor_local.api.decoders.enums import (
+    ACInputVoltageRange,
+    ChargerSourcePriority,
+    OutputSourcePriority,
+)
 from custom_components.dess_monitor_local.api.protocols import modbus_rtu
 
 
@@ -121,6 +126,66 @@ class TestSmg2ToQpiri:
         d = modbus_rtu.smg2_to_qpiri(_CONFIG)
         # 0 -> UtilityFirst per _OUTPUT_PRIORITY_MAP.
         assert d["output_source_priority"] == "UtilityFirst"
+
+
+class TestSmg2ToSnapshot:
+    def test_no_fabrication(self):
+        snap = modbus_rtu.smg2_to_snapshot(_SENSORS, _CONFIG, {})
+        m, r = snap.metrics, snap.ratings
+        # Fields the SMG-II can't measure are None (no Voltronic-shaped fakes).
+        assert m.bus_voltage is None              # was "400"
+        assert m.battery_soc is None              # was "100"
+        assert m.scc_battery_voltage is None      # was mirrored battery_voltage
+        assert m.ac_output_apparent_power is None  # was = active power
+        assert all(v is None for v in vars(m.status).values())  # no status bits
+        assert r.output_active_power is None      # was "4000"
+        assert r.battery_type is None             # was "UserDefined"
+        assert r.parallel_max_number is None      # was "6"
+        assert r.grid_voltage is None             # was "230.0"
+
+    def test_real_fields_typed(self):
+        snap = modbus_rtu.smg2_to_snapshot(_SENSORS, _CONFIG, {})
+        m, r = snap.metrics, snap.ratings
+        assert m.grid_voltage == 237.0
+        assert m.battery_voltage == 27.3
+        assert m.battery_current == -14.0          # signed (discharging)
+        assert m.battery_charge_current == 0.0
+        assert m.battery_discharge_current == 14.0
+        assert m.pv1.voltage == 32.9
+        assert m.temp_heatsink == 30.0 and m.temp_dcdc == 27.0
+        assert r.bulk_charging_voltage == 28.6
+        assert r.float_charging_voltage == 27.2
+        assert r.ac_input_voltage_range is ACInputVoltageRange.UPS
+        assert r.output_source_priority is OutputSourcePriority.UtilityFirst
+        assert r.charger_source_priority is ChargerSourcePriority.SolarAndUtility
+
+    def test_faults_and_capabilities(self):
+        snap = modbus_rtu.smg2_to_snapshot(
+            _SENSORS, _CONFIG,
+            {"fault_code": 5, "warning_code": 0, "fault_description": "x"},
+        )
+        assert snap.faults.fault_code == 5
+        assert snap.faults.has_fault is True
+        assert "grid_power" in snap.capabilities
+        assert snap.raw["sensors"] is _SENSORS
+
+    def test_legacy_shim_byte_identical(self):
+        # The snapshot's raw drives the legacy QPIGS/QPIRI projection, which
+        # must equal the direct projection (behaviour preserved in Phase A).
+        async def fake_snapshot(read_block):
+            return (dict(_SENSORS), dict(_CONFIG), {})
+
+        modadapter._clear_snapshot_cache()
+        uri = "modbus://10.0.0.5:502"
+        with patch.object(modadapter, "read_smg2_snapshot_via", side_effect=fake_snapshot):
+            qpigs = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIGS"))
+            modadapter._clear_snapshot_cache()
+            qpiri = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIRI"))
+            modadapter._clear_snapshot_cache()
+            qmod = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QMOD"))
+        assert qpigs == modbus_rtu.smg2_to_qpigs(_SENSORS)
+        assert qpiri == modbus_rtu.smg2_to_qpiri(_CONFIG)
+        assert qmod == {"sensors": _SENSORS, "config": _CONFIG, "faults": {}}
 
 
 class TestRtuFraming:

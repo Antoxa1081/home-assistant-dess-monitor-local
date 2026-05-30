@@ -7,6 +7,7 @@ from ..decoders.enums import (
     ChargeSourcePrioritySetting,
     OutputSourcePrioritySetting,
 )
+from ..model import DeviceSnapshot
 from ..protocols.eybond_dongle import parse_eybond_uri, send_eybond_bytes
 from ..protocols.modbus_rtu import (
     UNIT_ID,
@@ -19,6 +20,7 @@ from ..protocols.modbus_rtu import (
     read_smg2_snapshot_via,
     smg2_to_qpigs,
     smg2_to_qpiri,
+    smg2_to_snapshot,
     write_modbus_single_register,
 )
 from .base import BaseAdapter
@@ -37,8 +39,8 @@ _EYBOND_MODBUS_SCHEME = "eybond-modbus://"
 # default poll interval; very short intervals are effectively rate-limited to
 # it (fine — inverter state changes slowly).
 _SNAPSHOT_TTL = 5.0
-# key (device uri) -> (monotonic_ts, snapshot tuple | None)
-_SNAPSHOT_CACHE: dict[str, tuple[float, tuple | None]] = {}
+# key (device uri) -> (monotonic_ts, DeviceSnapshot | None)
+_SNAPSHOT_CACHE: dict[str, tuple[float, DeviceSnapshot | None]] = {}
 
 
 def _clear_snapshot_cache() -> None:
@@ -46,16 +48,17 @@ def _clear_snapshot_cache() -> None:
     _SNAPSHOT_CACHE.clear()
 
 
-async def _cached_snapshot(cache_key: str, read_block):
-    """Return the SMG-II snapshot for ``cache_key``, reading at most once per
-    TTL. A failed read is cached too (as ``None``) so a single dropped cycle
-    doesn't re-hammer the bus with six failing reads."""
+async def _cached_snapshot(cache_key: str, read_block) -> DeviceSnapshot | None:
+    """Return the SMG-II :class:`DeviceSnapshot` for ``cache_key``, reading at
+    most once per TTL. A failed read is cached too (as ``None``) so a single
+    dropped cycle doesn't re-hammer the bus with six failing reads."""
     now = time.monotonic()
     entry = _SNAPSHOT_CACHE.get(cache_key)
     if entry is not None and (now - entry[0]) < _SNAPSHOT_TTL:
         return entry[1]
     try:
-        snapshot = await read_smg2_snapshot_via(read_block)
+        sensors, config, faults = await read_smg2_snapshot_via(read_block)
+        snapshot = smg2_to_snapshot(sensors, config, faults)
     except Exception as err:  # noqa: BLE001 — transport/parse failure
         _LOGGER.debug("ModbusAdapter snapshot read failed: %s", err)
         snapshot = None
@@ -130,11 +133,20 @@ class ModbusAdapter(BaseAdapter):
             return _EybondModbusTransport(self.uri, self.timeout)
         return _TcpModbusTransport(self.uri)
 
+    async def get_snapshot(self) -> DeviceSnapshot | None:
+        """Read the SMG-II registers into the protocol-neutral domain model
+        (cached per poll cycle). ``None`` on a failed read."""
+        return await _cached_snapshot(self.uri, self._transport().read_block)
+
     async def get_data(self, command: str) -> dict:
-        snapshot = await _cached_snapshot(self.uri, self._transport().read_block)
+        # Transition shim: derive the legacy QPIGS/QPIRI-shaped sections from
+        # the snapshot's raw registers so entity behaviour is byte-identical
+        # until they migrate to read the model directly (Phase C).
+        snapshot = await self.get_snapshot()
         if snapshot is None:
             return {}
-        sensors, config, faults = snapshot
+        raw = snapshot.raw
+        sensors, config, faults = raw["sensors"], raw["config"], raw["faults"]
 
         if command == "QPIGS":
             return smg2_to_qpigs(sensors)
