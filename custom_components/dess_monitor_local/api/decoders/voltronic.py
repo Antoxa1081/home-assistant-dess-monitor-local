@@ -10,6 +10,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..model import (
+    DeviceSnapshot,
+    Faults,
+    Metrics,
+    PvInput,
+    Ratings,
+    WarningKey,
+)
 from .enums import (
     ACInputVoltageRange,
     BatteryType,
@@ -342,3 +350,138 @@ def get_command_name_by_hex(hex_string: str) -> str:
         if normalized_input == hex_cmd.upper():
             return name
     return "Unknown HEX command"
+
+
+# ---------------------------------------------------------------------------
+# Domain-model projection. The PI30 decoders are already faithful (no
+# fabrication), so this just parses the string fields into typed model values.
+# See wiki/Domain-Model-Refactor-Plan.md.
+# ---------------------------------------------------------------------------
+def _flt(d: dict, key: str) -> float | None:
+    v = d.get(key)
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def _int(d: dict, key: str) -> int | None:
+    f = _flt(d, key)
+    return None if f is None else int(f)
+
+
+def _enum_by_name(enum_cls, name):
+    if not isinstance(name, str):
+        return None
+    return enum_cls.__members__.get(name)
+
+
+def voltronic_to_snapshot(sections: dict) -> DeviceSnapshot:
+    """Map decoded QPIGS/QPIRI/QMOD/QPIWS/QPIGS2 sections onto the model."""
+    qpigs = sections.get("qpigs") or {}
+    qpiri = sections.get("qpiri") or {}
+    qmod = sections.get("qmod") or {}
+    qpiws = sections.get("qpiws") or {}
+    qpigs2 = sections.get("qpigs2") or {}
+
+    charge = _flt(qpigs, "battery_charging_current")
+    discharge = _flt(qpigs, "battery_discharge_current")
+    battery_current = None
+    if charge is not None or discharge is not None:
+        battery_current = (charge or 0.0) - (discharge or 0.0)
+    battery_voltage = _flt(qpigs, "battery_voltage")
+    battery_power = None
+    if battery_voltage is not None and battery_current is not None:
+        battery_power = round(battery_voltage * battery_current, 1)
+
+    mode = qmod.get("operating_mode")
+    if not isinstance(mode, OperatingMode):
+        mode = None
+
+    pv2 = None
+    pv2_v, pv2_c = _flt(qpigs2, "pv_voltage"), _flt(qpigs2, "pv_current")
+    if pv2_v is not None or pv2_c is not None:
+        pv2_p = round(pv2_v * pv2_c, 1) if (pv2_v is not None and pv2_c is not None) else None
+        pv2 = PvInput(voltage=pv2_v, current=pv2_c, power=pv2_p)
+
+    metrics = Metrics(
+        mode=mode,
+        grid_voltage=_flt(qpigs, "grid_voltage"),
+        grid_frequency=_flt(qpigs, "grid_frequency"),
+        ac_output_voltage=_flt(qpigs, "ac_output_voltage"),
+        ac_output_frequency=_flt(qpigs, "ac_output_frequency"),
+        ac_output_active_power=_flt(qpigs, "output_active_power"),
+        ac_output_apparent_power=_flt(qpigs, "output_apparent_power"),
+        load_percent=_flt(qpigs, "load_percent"),
+        bus_voltage=_flt(qpigs, "bus_voltage"),
+        battery_voltage=battery_voltage,
+        battery_current=battery_current,
+        battery_power=battery_power,
+        battery_soc=_flt(qpigs, "battery_capacity"),
+        scc_battery_voltage=_flt(qpigs, "scc_battery_voltage"),
+        pv1=PvInput(
+            voltage=_flt(qpigs, "pv_input_voltage"),
+            current=_flt(qpigs, "pv_input_current"),
+            power=_flt(qpigs, "pv_charging_power"),
+        ),
+        pv2=pv2,
+        temp_heatsink=_flt(qpigs, "inverter_heat_sink_temperature"),
+        # PI30 status bits → DeviceStatus is wired when the status binary
+        # sensors migrate (Phase C).
+    )
+
+    ratings = Ratings(
+        grid_voltage=_flt(qpiri, "rated_grid_voltage"),
+        input_current=_flt(qpiri, "rated_input_current"),
+        ac_output_voltage=_flt(qpiri, "rated_ac_output_voltage"),
+        output_frequency=_flt(qpiri, "rated_output_frequency"),
+        output_current=_flt(qpiri, "rated_output_current"),
+        output_apparent_power=_flt(qpiri, "rated_output_apparent_power"),
+        output_active_power=_flt(qpiri, "rated_output_active_power"),
+        battery_voltage=_flt(qpiri, "rated_battery_voltage"),
+        battery_capacity_ah=_flt(qpiri, "rated_battery_capacity"),
+        bulk_charging_voltage=_flt(qpiri, "bulk_charging_voltage"),
+        float_charging_voltage=_flt(qpiri, "float_charging_voltage"),
+        low_battery_to_bypass_voltage=_flt(qpiri, "low_battery_to_ac_bypass_voltage"),
+        shutdown_battery_voltage=_flt(qpiri, "shut_down_battery_voltage"),
+        high_battery_to_battery_mode_voltage=_flt(
+            qpiri, "high_battery_voltage_to_battery_mode"
+        ),
+        max_charging_current=_flt(qpiri, "max_charging_current"),
+        max_utility_charging_current=_flt(qpiri, "max_utility_charging_current"),
+        battery_type=_enum_by_name(BatteryType, qpiri.get("battery_type")),
+        ac_input_voltage_range=_enum_by_name(
+            ACInputVoltageRange, qpiri.get("ac_input_voltage_range")
+        ),
+        output_source_priority=_enum_by_name(
+            OutputSourcePriority, qpiri.get("output_source_priority")
+        ),
+        charger_source_priority=_enum_by_name(
+            ChargerSourcePriority, qpiri.get("charger_source_priority")
+        ),
+        parallel_mode=_enum_by_name(ParallelMode, qpiri.get("parallel_mode")),
+        parallel_max_number=_int(qpiri, "parallel_max_number"),
+    )
+
+    faults = Faults(warnings=WarningKey.from_flags(qpiws))
+
+    caps: set[str] = set()
+    if pv2 is not None:
+        caps.add("pv2")
+    if metrics.scc_battery_voltage is not None:
+        caps.add("scc")
+    if metrics.battery_soc is not None:
+        caps.add("device_soc")
+
+    return DeviceSnapshot(
+        metrics=metrics,
+        ratings=ratings,
+        faults=faults,
+        capabilities=caps,
+        raw={
+            "qpigs": qpigs, "qpiri": qpiri, "qmod": qmod,
+            "qpiws": qpiws, "qpigs2": qpigs2,
+        },
+    )

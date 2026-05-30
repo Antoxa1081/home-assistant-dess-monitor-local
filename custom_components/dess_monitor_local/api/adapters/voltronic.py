@@ -5,7 +5,8 @@ import logging
 
 import serial_asyncio_fast as serial_asyncio
 
-from ..decoders.voltronic import decode_direct_response
+from ..decoders.voltronic import decode_direct_response, voltronic_to_snapshot
+from ..model import DeviceSnapshot
 from ..protocols.elfin_tcp import ElfinTCPProtocol, parse_tcp_uri
 from ..protocols.serial_uart import SERIAL_BAUDRATE, SerialCommandProtocol
 from .base import BaseAdapter
@@ -14,6 +15,22 @@ _LOGGER = logging.getLogger(__name__)
 
 class VoltronicAdapter(BaseAdapter):
     """Adapter for Voltronic PI30 protocol over TCP or Serial."""
+
+    async def get_snapshot(self) -> DeviceSnapshot:
+        """Fetch the PI30 command set and assemble the domain model.
+
+        Each command is a separate request (unlike Modbus' single block read);
+        the decoders are already faithful, so the model is a straight typed
+        projection of the decoded sections.
+        """
+        sections = {
+            "qpigs": await self.get_data("QPIGS"),
+            "qpiri": await self.get_data("QPIRI"),
+            "qmod": await self.get_data("QMOD"),
+            "qpiws": await self.get_data("QPIWS"),
+            "qpigs2": await self.get_data("QPIGS2"),
+        }
+        return voltronic_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:
         loop = asyncio.get_running_loop()

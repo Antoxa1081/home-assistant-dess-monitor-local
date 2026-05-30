@@ -33,18 +33,57 @@ from .decoders.enums import (
 class WarningKey(StrEnum):
     """Canonical, protocol-neutral warning identifiers.
 
-    Adapters map their native faults onto this set. Started minimal for the
-    Modbus vertical slice; the full union (PI30 bits + PI18/agent ``warn_*``)
-    is added as those adapters migrate.
+    Adapters map their native faults onto this set. The value equals the
+    legacy flag key, so ``WarningKey(key)`` maps a decoded flag straight in.
+    The members below are the PI30 QPIWS set (the broadest); PI18/agent
+    ``warn_*`` flags map onto the same members as those adapters migrate.
     """
 
+    # PI30 QPIWS warnings/faults
     INVERTER_FAULT = "inverter_fault"
-    OVERLOAD = "overload"
+    BUS_OVER = "bus_over"
+    BUS_UNDER = "bus_under"
+    BUS_SOFT_FAIL = "bus_soft_fail"
+    LINE_FAIL = "line_fail"
+    OPV_SHORT = "opv_short"
+    INVERTER_VOLTAGE_TOO_LOW = "inverter_voltage_too_low"
+    INVERTER_VOLTAGE_TOO_HIGH = "inverter_voltage_too_high"
     OVER_TEMPERATURE = "over_temperature"
     FAN_LOCKED = "fan_locked"
+    BATTERY_VOLTAGE_HIGH = "battery_voltage_high"
+    BATTERY_LOW_ALARM = "battery_low_alarm"
     BATTERY_UNDER_SHUTDOWN = "battery_under_shutdown"
+    OVERLOAD = "overload"
     EEPROM_FAULT = "eeprom_fault"
-    LINE_FAIL = "line_fail"
+    INVERTER_OVER_CURRENT = "inverter_over_current"
+    INVERTER_SOFT_FAIL = "inverter_soft_fail"
+    SELF_TEST_FAIL = "self_test_fail"
+    OP_DC_VOLTAGE_OVER = "op_dc_voltage_over"
+    BATTERY_OPEN = "battery_open"
+    CURRENT_SENSOR_FAIL = "current_sensor_fail"
+    BATTERY_SHORT = "battery_short"
+    POWER_LIMIT = "power_limit"
+    PV_VOLTAGE_HIGH = "pv_voltage_high"
+    MPPT_OVERLOAD_FAULT = "mppt_overload_fault"
+    MPPT_OVERLOAD_WARNING = "mppt_overload_warning"
+    BATTERY_TOO_LOW_TO_CHARGE = "battery_too_low_to_charge"
+
+    @classmethod
+    def from_flags(cls, flags: dict) -> set[WarningKey]:
+        """Active canonical warnings from a decoded ``{flag: bool}`` dict.
+
+        Accepts both the bare PI30 keys and ``warn_``-prefixed PI18/agent
+        keys; unknown keys are ignored.
+        """
+        out: set[WarningKey] = set()
+        for key, value in flags.items():
+            if not value:
+                continue
+            name = key[5:] if key.startswith("warn_") else key
+            member = cls._value2member_map_.get(name)
+            if member is not None:
+                out.add(member)
+        return out
 
 
 @dataclass(frozen=True)
