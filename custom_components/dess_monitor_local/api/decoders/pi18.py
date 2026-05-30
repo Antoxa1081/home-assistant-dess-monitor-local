@@ -174,7 +174,8 @@ def _decode_gs(tokens: list[str]) -> dict[str, Any]:
         "output_apparent_power": f"{_safe_int(raw['output_apparent_power']):04d}",
         "output_active_power": f"{_safe_int(raw['output_active_power']):04d}",
         "load_percent": f"{_safe_int(raw['load_percent']):03d}",
-        "bus_voltage": "400",
+        # No bus_voltage: PI18 has no bus-voltage field (was fabricated "400").
+        # The snapshot reports bus_voltage=None and the sensor is gated.
         "battery_voltage": f"{_safe_int(raw['battery_voltage']) / 10.0:.2f}",
         "battery_charging_current": f"{_safe_int(raw['battery_charging_current']):03d}",
         "battery_capacity": f"{_safe_int(raw['battery_capacity']):03d}",
@@ -302,16 +303,12 @@ def _decode_piri(tokens: list[str]) -> dict[str, Any]:
         "output_source_priority": output_priority,
         "charger_source_priority": charger_priority,
         "parallel_max_number": raw["parallel_max"] or "0",
-        "reserved_uu": "00",
-        "reserved_v": "0",
-        # PI18 has no PIRI parallel master/slave readout. Default to standalone.
-        "parallel_mode": "Standalone",
         "high_battery_voltage_to_battery_mode": f"{_safe_int(raw['battery_recharge_voltage']) / 10.0:.1f}",
-        "solar_work_condition_in_parallel": "0",
-        "solar_max_charging_power_auto_adjust": "1_",
-        "rated_battery_capacity": "200",
-        "reserved_b": "0",
-        "reserved_ccc": "0",
+        # Dropped fabrications (PI18 has no PIRI readout for these; the snapshot
+        # reports None and the matching sensors are capability-gated):
+        # parallel_mode ("Standalone"), reserved_uu/v/b/ccc, rated_battery_
+        # capacity ("200"), solar_work_condition_in_parallel,
+        # solar_max_charging_power_auto_adjust.
     }
 
 

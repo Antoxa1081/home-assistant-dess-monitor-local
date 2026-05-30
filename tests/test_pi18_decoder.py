@@ -148,6 +148,21 @@ class TestDecodePiri:
         d = pi18._decode_piri(vals)
         assert d["battery_type"] == "9"
 
+    def test_no_fabricated_nameplate_placeholders(self):
+        # Phase D: PI18 has no PIRI readout for these — they must not be
+        # fabricated (snapshot reports None, the sensors are gated).
+        d = pi18._decode_piri(self._piri())
+        for fabricated in (
+            "parallel_mode", "rated_battery_capacity", "reserved_uu",
+            "reserved_v", "reserved_b", "reserved_ccc",
+            "solar_work_condition_in_parallel",
+            "solar_max_charging_power_auto_adjust",
+        ):
+            assert fabricated not in d
+        # Real PIRI fields stay.
+        assert d["parallel_max_number"] == "6"
+        assert d["high_battery_voltage_to_battery_mode"] == "25.0"
+
 
 class TestSmallDecoders:
     def test_decode_id_with_length_prefix(self):
@@ -221,3 +236,8 @@ class TestDecodeGs:
         assert d["battery_charging_current"] == "000"
         # PI30-compat status bit strings are always present.
         assert "device_status_bits_b7_b0" in d
+
+    def test_no_fabricated_bus_voltage(self):
+        # Phase D: PI18 has no bus-voltage field; it must not be fabricated.
+        d = pi18._decode_gs(["2393", "500", "2306", "499"])
+        assert "bus_voltage" not in d
