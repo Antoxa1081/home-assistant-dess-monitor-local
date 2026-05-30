@@ -159,11 +159,19 @@ def resolve_chrage_source_priority(device_data, snapshot=None):
 
 
 def resolve_max_utility_charging_current(device_data, snapshot=None):
-    # Deliberately stays on the legacy qpiri string: the raw textual format
-    # ("030" vs "30.0") is inspected downstream to choose the inverter's
-    # expected write format, which a typed snapshot float would discard.
-    # ``snapshot`` is accepted for call-site symmetry but ignored.
-    return (device_data.get('qpiri') or {}).get('max_utility_charging_current')
+    # Prefer the legacy qpiri string when present: its raw textual format
+    # ("030" vs "30.0") is inspected downstream to pick the inverter's expected
+    # write format, which a typed snapshot float would discard.
+    # Protocols that no longer fabricate qpiri (SMG-II/Modbus under the
+    # domain-model refactor) have no legacy string, so fall back to the typed
+    # snapshot rating — otherwise the entity reads None and shows as
+    # unavailable. Their adapters ignore the write float_format anyway.
+    legacy = (device_data.get('qpiri') or {}).get('max_utility_charging_current')
+    if legacy is not None:
+        return legacy
+    if snapshot is not None:
+        return snapshot.ratings.max_utility_charging_current
+    return None
 
 
 class InverterOutputPrioritySelect(SelectBase):
@@ -263,14 +271,14 @@ class InverterMaxUtilityChargingCurrentNumber(SelectBase):
 
         if coordinator.data is not None:
             data = coordinator.data[self._inverter_device.inverter_id]
-            raw = resolve_max_utility_charging_current(data)
+            raw = resolve_max_utility_charging_current(data, self.snapshot)
             self._raw_readback = raw if raw is None else str(raw)
             self._attr_current_option = _normalize_amps(raw)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         data = self.coordinator.data[self._inverter_device.inverter_id]
-        raw = resolve_max_utility_charging_current(data)
+        raw = resolve_max_utility_charging_current(data, self.snapshot)
         self._raw_readback = raw if raw is None else str(raw)
         self._attr_current_option = _normalize_amps(raw)
         self.async_write_ha_state()
