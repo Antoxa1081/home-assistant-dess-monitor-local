@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -48,17 +46,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
     else:
         await _migrate_data_to_options(hass, entry)
         direct_coordinator_ctx = DirectCoordinator(hass, entry)
-        await asyncio.gather(
-            direct_coordinator_ctx.async_config_entry_first_refresh()
-        )
+        # Populate the device list (the coordinator's one-time _async_setup
+        # work) WITHOUT performing the first data fetch. On a slow transport
+        # (e.g. cloud-proxied Modbus) that fetch can take minutes; awaiting it
+        # here via async_config_entry_first_refresh would block HA startup and
+        # trip the "Waiting on integrations to complete setup" watchdog. The
+        # first poll is kicked off in the background below — entities come up
+        # immediately (unavailable) and populate on the first cycle.
+        direct_coordinator_ctx.devices = await direct_coordinator_ctx.get_active_devices()
         entry.runtime_data = hub.Hub(hass, entry.data["name"], direct_coordinator_ctx)
         await entry.runtime_data.init()
 
     # This creates each HA object for each platform your device requires.
     # It's done by calling the `async_setup_entry` function in each platform module.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await asyncio.gather(
+    # Fire the first data fetch without blocking setup (see above). async_refresh
+    # never raises — a failed first poll just leaves entities unavailable until
+    # the next cycle.
+    entry.async_create_background_task(
+        hass,
         entry.runtime_data.direct_coordinator.async_refresh(),
+        name="dess_monitor_local_first_refresh",
     )
     entry.async_on_unload(entry.add_update_listener(_update_listener))
     return True

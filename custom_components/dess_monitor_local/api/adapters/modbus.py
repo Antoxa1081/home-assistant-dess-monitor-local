@@ -60,7 +60,13 @@ async def _cached_snapshot(cache_key: str, read_block) -> DeviceSnapshot | None:
     except Exception as err:  # noqa: BLE001 — transport/parse failure
         _LOGGER.debug("ModbusAdapter snapshot read failed: %s", err)
         snapshot = None
-    _SNAPSHOT_CACHE[cache_key] = (now, snapshot)
+    # Stamp the cache when the read COMPLETES, not when it started (``now``).
+    # On a slow transport (cloud-proxied Modbus) the 3-block read can take far
+    # longer than the TTL; stamping the start time would leave the entry
+    # already expired by the time the next command of the same poll cycle runs,
+    # defeating the cache and re-reading all blocks per command (18 round-trips
+    # instead of 3).
+    _SNAPSHOT_CACHE[cache_key] = (time.monotonic(), snapshot)
     return snapshot
 
 
