@@ -70,6 +70,10 @@ DEFAULT_BROADCAST = "255.255.255.255"
 DEFAULT_BIND_PORT = 8899
 
 ANNOUNCE_INTERVAL = 5.0
+# How often the announcer re-evaluates whether to keep broadcasting. Kept
+# short (vs the 5s send cadence) so it catches the brief window where all
+# expected dongles are connected and pauses before knocking them offline.
+ANNOUNCE_CHECK_INTERVAL = 1.0
 # Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
 # if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
 # (FC=4) does NOT count as keepalive. Observed in field logs: every session
@@ -523,22 +527,34 @@ class EybondManager:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setblocking(False)
+        loop = asyncio.get_running_loop()
+        # Evaluate the pause condition frequently (so we catch the brief window
+        # where all dongles are simultaneously connected and stop knocking them
+        # offline) but rate-limit the actual broadcast to ANNOUNCE_INTERVAL.
+        last_send = 0.0
         was_paused = False
         try:
             while True:
                 if self._should_announce():
+                    if was_paused:
+                        _LOGGER.info(
+                            "EyBond: announce RESUMED — expected dongle missing"
+                        )
                     was_paused = False
-                    try:
-                        sock.sendto(payload, (self.broadcast, UDP_PORT))
-                        _LOGGER.debug(
-                            "EyBond: UDP -> %s:%d %r",
-                            self.broadcast, UDP_PORT, payload.decode(),
-                        )
-                    except OSError as err:
-                        _LOGGER.warning(
-                            "EyBond: UDP send failed (target %s:%d): %s",
-                            self.broadcast, UDP_PORT, err,
-                        )
+                    now = loop.time()
+                    if now - last_send >= ANNOUNCE_INTERVAL:
+                        last_send = now
+                        try:
+                            sock.sendto(payload, (self.broadcast, UDP_PORT))
+                            _LOGGER.debug(
+                                "EyBond: UDP -> %s:%d %r",
+                                self.broadcast, UDP_PORT, payload.decode(),
+                            )
+                        except OSError as err:
+                            _LOGGER.warning(
+                                "EyBond: UDP send failed (target %s:%d): %s",
+                                self.broadcast, UDP_PORT, err,
+                            )
                 elif not was_paused:
                     # Don't keep knocking connected dongles offline.
                     was_paused = True
@@ -547,7 +563,7 @@ class EybondManager:
                         "(%s); will resume if one drops",
                         self.identified_pns,
                     )
-                await asyncio.sleep(ANNOUNCE_INTERVAL)
+                await asyncio.sleep(ANNOUNCE_CHECK_INTERVAL)
         except asyncio.CancelledError:
             _LOGGER.info("EyBond: UDP announcer STOP")
             raise
