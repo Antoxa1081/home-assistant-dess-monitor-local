@@ -7,6 +7,7 @@ from ..decoders.enums import (
     ChargeSourcePrioritySetting,
     OutputSourcePrioritySetting,
 )
+from ..model import DeviceSnapshot
 
 
 class BaseAdapter(ABC):
@@ -26,6 +27,16 @@ class BaseAdapter(ABC):
     async def set_data(self, command: str) -> dict:
         """Send a raw set command to the device."""
         pass
+
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
+        """Build a :class:`DeviceSnapshot` from already-fetched legacy section
+        dicts (``qpigs``/``qpiri``/…), without any I/O.
+
+        This lets the coordinator derive the domain model from the data it
+        already polled, so the migration is additive and adds no transport.
+        The default returns an empty snapshot; protocol adapters override it.
+        """
+        return DeviceSnapshot()
 
     # --- Semantic settings (default Voltronic implementation) ---
 

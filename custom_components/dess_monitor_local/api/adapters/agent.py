@@ -77,6 +77,9 @@ class AgentAdapter(BaseAdapter):
             "qpigs2": await self.get_data("QPIGS2"),
             "qfws": await self.get_data("QFWS"),
         }
+        return self.snapshot_from_sections(sections)
+
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
         return agent_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:

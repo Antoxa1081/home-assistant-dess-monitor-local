@@ -29,14 +29,19 @@ class EyBondAdapter(BaseAdapter):
                 "qmod": await self.get_data("QMOD"),
                 "qfws": await self.get_data("QFWS"),
             }
+        else:
+            sections = {
+                "qpigs": await self.get_data("QPIGS"),
+                "qpiri": await self.get_data("QPIRI"),
+                "qmod": await self.get_data("QMOD"),
+                "qpiws": await self.get_data("QPIWS"),
+                "qpigs2": await self.get_data("QPIGS2"),
+            }
+        return self.snapshot_from_sections(sections)
+
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
+        if self.is_pi18:
             return pi18_to_snapshot(sections)
-        sections = {
-            "qpigs": await self.get_data("QPIGS"),
-            "qpiri": await self.get_data("QPIRI"),
-            "qmod": await self.get_data("QMOD"),
-            "qpiws": await self.get_data("QPIWS"),
-            "qpigs2": await self.get_data("QPIGS2"),
-        }
         return voltronic_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:

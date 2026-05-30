@@ -30,6 +30,9 @@ class VoltronicAdapter(BaseAdapter):
             "qpiws": await self.get_data("QPIWS"),
             "qpigs2": await self.get_data("QPIGS2"),
         }
+        return self.snapshot_from_sections(sections)
+
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
         return voltronic_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:

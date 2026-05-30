@@ -20,6 +20,9 @@ class PI18Adapter(BaseAdapter):
             "qmod": await self.get_data("QMOD"),
             "qfws": await self.get_data("QFWS"),
         }
+        return self.snapshot_from_sections(sections)
+
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
         return pi18_to_snapshot(sections)
 
     async def get_data(self, command: str) -> dict:

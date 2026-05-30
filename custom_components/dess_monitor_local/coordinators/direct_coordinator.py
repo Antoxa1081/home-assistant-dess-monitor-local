@@ -8,7 +8,10 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
+from custom_components.dess_monitor_local.api.dispatcher import (
+    build_snapshot,
+    get_direct_data,
+)
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
     CONF_NAME,
@@ -64,6 +67,9 @@ class DirectCoordinator(DataUpdateCoordinator):
 
         )
         self._targets = targets
+        # Per-device protocol-neutral DeviceSnapshot, keyed by target id —
+        # derived from each cycle's fetched sections (domain-model refactor).
+        self.snapshots: dict = {}
         # Per-(target id, command) consecutive-failure counter + freeze policy.
         self._failures = FailureTracker(self._MAX_CONSECUTIVE_FAILURES)
         # self.my_api = my_api
@@ -101,6 +107,20 @@ class DirectCoordinator(DataUpdateCoordinator):
         protocol = self.config_entry.options.get(CONF_PROTOCOL, PROTOCOL_VOLTRONIC)
         name = self.config_entry.data.get(CONF_NAME) or "Inverter"
         return [DeviceTarget(id=device, uri=device, protocol=protocol, name=name)]
+
+    def _build_snapshots(self, data_map: dict) -> dict:
+        """Build a DeviceSnapshot per device from the just-fetched sections."""
+        uris = {getattr(t, "id", t): getattr(t, "uri", t) for t in self.devices}
+        snapshots: dict = {}
+        for key, sections in data_map.items():
+            uri = uris.get(key)
+            if uri is None:
+                continue
+            try:
+                snapshots[key] = build_snapshot(uri, sections)
+            except Exception as err:  # noqa: BLE001 — mapping must not break polling
+                _LOGGER.debug("snapshot build failed for %s: %s", key, err)
+        return snapshots
 
     async def _async_update_data(self):
         strict_crc = bool(
@@ -239,6 +259,11 @@ class DirectCoordinator(DataUpdateCoordinator):
                     # }
 
                 data_map = dict(await asyncio.gather(*map(fetch_device_data, self.devices)))
+                # Additionally derive the protocol-neutral domain model from
+                # the sections we just fetched (no extra transport). Entities
+                # still read the legacy sections; the snapshots are consumed as
+                # entity groups migrate (domain-model refactor, Phase C).
+                self.snapshots = self._build_snapshots(data_map)
                 # print('devices', self.devices, data_map)
                 return data_map
         except TimeoutError as err:

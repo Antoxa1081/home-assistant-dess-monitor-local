@@ -138,6 +138,20 @@ class ModbusAdapter(BaseAdapter):
         (cached per poll cycle). ``None`` on a failed read."""
         return await _cached_snapshot(self.uri, self._transport().read_block)
 
+    def snapshot_from_sections(self, sections: dict) -> DeviceSnapshot:
+        # Modbus get_data returns {sensors, config, faults} for the
+        # non-QPIGS/QPIRI commands; recover the raw register blocks from any
+        # of them and rebuild the model (no I/O — used by the coordinator).
+        for key in ("qmod", "qpiws", "qfws", "qpigs2"):
+            raw = sections.get(key)
+            if isinstance(raw, dict) and "sensors" in raw:
+                return smg2_to_snapshot(
+                    raw.get("sensors") or {},
+                    raw.get("config") or {},
+                    raw.get("faults") or {},
+                )
+        return DeviceSnapshot()
+
     async def get_data(self, command: str) -> dict:
         # Transition shim: derive the legacy QPIGS/QPIRI-shaped sections from
         # the snapshot's raw registers so entity behaviour is byte-identical

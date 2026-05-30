@@ -26,8 +26,15 @@ from .decoders.enums import (
     ChargeSourcePrioritySetting,
     OutputSourcePrioritySetting,
 )
+from .model import DeviceSnapshot
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def build_snapshot(device: str, sections: dict) -> DeviceSnapshot:
+    """Build a protocol-neutral :class:`DeviceSnapshot` from already-fetched
+    legacy section dicts (no I/O). Routes to the adapter for ``device``."""
+    return get_adapter(device).snapshot_from_sections(sections)
 
 # ---------------------------------------------------------------------------
 # READ

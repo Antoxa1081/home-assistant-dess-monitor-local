@@ -102,6 +102,14 @@ async def test_setup_creates_entities_and_unloads(hass, enable_custom_integratio
         assert hass.states.get("number.test_inv_vsoc_battery_capacity_ah") is not None
         assert hass.states.get("select.test_inv_vsoc_battery_mode") is not None
 
+        # Phase B: the coordinator also exposes the protocol-neutral snapshot,
+        # built from the same fetched sections (no extra transport).
+        coord = entry.runtime_data.direct_coordinator
+        snap = coord.snapshots.get("tcp://1.2.3.4:8899")
+        assert snap is not None
+        assert snap.metrics.battery_voltage == 26.7
+        assert snap.metrics.battery_current == -22.0  # discharging 22 A, signed
+
     # Clean teardown — the command queue must drain without lingering tasks.
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
