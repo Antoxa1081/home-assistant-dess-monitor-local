@@ -281,3 +281,72 @@ class TestSnapshotMetricMigration:
         _neutralise_write(ent)
         ent._handle_coordinator_update()
         assert ent._attr_native_value == 27.0
+
+    def test_ratings_numeric_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Ratings,
+        )
+        snap = DeviceSnapshot(ratings=Ratings(output_active_power=4200.0))
+        ent = ds.DirectWattSensorBase(
+            _Dev(),
+            _SnapCoord({"qpiri": {"rated_output_active_power": "9999"}}, snap),
+            data_section="qpiri", data_key="rated_output_active_power",
+            name_suffix="Rated Output Active Power",
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 4200.0
+
+
+class TestSnapshotEnumMigration:
+    def test_enum_value_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.decoders.enums import (
+            OutputSourcePriority,
+        )
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Ratings,
+        )
+        snap = DeviceSnapshot(
+            ratings=Ratings(output_source_priority=OutputSourcePriority.SBU)
+        )
+        ent = ds.OutputSourcePrioritySensor(
+            _Dev(),
+            _SnapCoord({"qpiri": {"output_source_priority": "UtilityFirst"}}, snap),
+            data_section="qpiri", data_key="output_source_priority",
+            name_suffix="Output Source Priority",
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "SBU"  # snapshot wins over legacy
+
+    def test_enum_none_goes_unavailable(self):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Ratings,
+        )
+        # SMG-II has no battery-type register → None (was fabricated).
+        snap = DeviceSnapshot(ratings=Ratings(battery_type=None))
+        ent = ds.BatteryTypeSensor(
+            _Dev(),
+            _SnapCoord({"qpiri": {"battery_type": "UserDefined"}}, snap),
+            data_section="qpiri", data_key="battery_type", name_suffix="Battery Type",
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value is None
+
+    def test_operating_mode_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.decoders.enums import (
+            OperatingMode,
+        )
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        snap = DeviceSnapshot(metrics=Metrics(mode=OperatingMode.Battery))
+        ent = ds.DirectOperatingModeSensor(_Dev(), _SnapCoord({"qmod": {}}, snap))
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Battery"

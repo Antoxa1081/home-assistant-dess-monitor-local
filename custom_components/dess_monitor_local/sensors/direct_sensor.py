@@ -118,6 +118,36 @@ _SNAPSHOT_FIELD = {
     ("qpigs", "pv_charging_power"): lambda s: s.metrics.pv1.power,
     ("qpigs", "scc_battery_voltage"): lambda s: s.metrics.scc_battery_voltage,
     ("qpigs", "grid_ac_in_power"): lambda s: s.metrics.grid_power,
+    # qpiri — device ratings / nameplate (Phase C group 2)
+    ("qpiri", "rated_grid_voltage"): lambda s: s.ratings.grid_voltage,
+    ("qpiri", "rated_input_current"): lambda s: s.ratings.input_current,
+    ("qpiri", "rated_ac_output_voltage"): lambda s: s.ratings.ac_output_voltage,
+    ("qpiri", "rated_output_frequency"): lambda s: s.ratings.output_frequency,
+    ("qpiri", "rated_output_current"): lambda s: s.ratings.output_current,
+    ("qpiri", "rated_output_apparent_power"): lambda s: s.ratings.output_apparent_power,
+    ("qpiri", "rated_output_active_power"): lambda s: s.ratings.output_active_power,
+    ("qpiri", "rated_battery_voltage"): lambda s: s.ratings.battery_voltage,
+    ("qpiri", "low_battery_to_ac_bypass_voltage"):
+        lambda s: s.ratings.low_battery_to_bypass_voltage,
+    ("qpiri", "shut_down_battery_voltage"): lambda s: s.ratings.shutdown_battery_voltage,
+    ("qpiri", "bulk_charging_voltage"): lambda s: s.ratings.bulk_charging_voltage,
+    ("qpiri", "float_charging_voltage"): lambda s: s.ratings.float_charging_voltage,
+    ("qpiri", "max_utility_charging_current"):
+        lambda s: s.ratings.max_utility_charging_current,
+    ("qpiri", "max_charging_current"): lambda s: s.ratings.max_charging_current,
+    ("qpiri", "high_battery_voltage_to_battery_mode"):
+        lambda s: s.ratings.high_battery_to_battery_mode_voltage,
+    ("qpiri", "rated_battery_capacity"): lambda s: s.ratings.battery_capacity_ah,
+}
+
+# Enum-valued sensors (Phase C group 2): (section, key) → snapshot enum field.
+# The sensor stores the enum's ``.name``; None → no value.
+_SNAPSHOT_ENUM_FIELD = {
+    ("qpiri", "battery_type"): lambda s: s.ratings.battery_type,
+    ("qpiri", "ac_input_voltage_range"): lambda s: s.ratings.ac_input_voltage_range,
+    ("qpiri", "output_source_priority"): lambda s: s.ratings.output_source_priority,
+    ("qpiri", "charger_source_priority"): lambda s: s.ratings.charger_source_priority,
+    ("qpiri", "parallel_mode"): lambda s: s.ratings.parallel_mode,
 }
 
 
@@ -252,14 +282,16 @@ class DirectEnumSensorBase(DirectTypedSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        section = self.data.get(self.data_section, {})
-        raw_value = section.get(self.data_key)
-
-        if raw_value in self.options:
-            self._attr_native_value = raw_value
+        accessor = _SNAPSHOT_ENUM_FIELD.get((self.data_section, self.data_key))
+        snapshot = self.snapshot if accessor is not None else None
+        if accessor is not None and snapshot is not None:
+            enum_val = accessor(snapshot)
+            value = enum_val.name if enum_val is not None else None
         else:
-            self._attr_native_value = None
+            section = self.data.get(self.data_section, {})
+            value = section.get(self.data_key)
 
+        self._attr_native_value = value if value in self.options else None
         self.async_write_ha_state()
 
 
@@ -682,14 +714,18 @@ class DirectOperatingModeSensor(DirectEnumSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        section = self.data.get("qmod", {})
-        raw = section.get("operating_mode")
-        if hasattr(raw, "name"):
-            value = raw.name
-        elif isinstance(raw, str):
-            value = raw
+        snapshot = self.snapshot
+        if snapshot is not None:
+            mode = snapshot.metrics.mode
+            value = mode.name if mode is not None else None
         else:
-            value = None
+            raw = self.data.get("qmod", {}).get("operating_mode")
+            if hasattr(raw, "name"):
+                value = raw.name
+            elif isinstance(raw, str):
+                value = raw
+            else:
+                value = None
         if value in self.options:
             self._attr_native_value = value
         else:
