@@ -445,8 +445,14 @@ protocol (seeded from the persisted registry so restarts don't re-notify).
 
 Stale-record removal is implemented: the device-edit step has a **Remove this
 device** option that drops a gone dongle from the registry (it is re-discovered
-if it comes back online). Remaining Phase 5 niceties (force rediscovery,
-protocol auto-probe) are still open.
+if it comes back online).
+
+Force rediscovery is implemented: a **Scan for new dongles** option in the hub
+options opens a ~60s window (`EybondManager.force_rediscovery` →
+`_force_announce_until`) where the announcer broadcasts regardless of
+connection state, so brand-new dongles attach and get discovered. It briefly
+flaps connected dongles (the broadcast can't target one), acceptable for an
+explicit scan. Remaining Phase 5 nicety (protocol auto-probe) is still open.
 
 ### Phase 4: Child device polling
 

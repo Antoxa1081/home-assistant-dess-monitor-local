@@ -74,6 +74,11 @@ ANNOUNCE_INTERVAL = 5.0
 # short (vs the 5s send cadence) so it catches the brief window where all
 # expected dongles are connected and pauses before knocking them offline.
 ANNOUNCE_CHECK_INTERVAL = 1.0
+# Duration of a user-triggered "scan for new dongles" — the announcer
+# broadcasts regardless of connection state for this window so brand-new
+# dongles receive ``set>server`` and attach. Briefly flaps connected dongles
+# (broadcast can't target one), which is acceptable for an explicit scan.
+REDISCOVERY_WINDOW = 60.0
 # Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
 # if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
 # (FC=4) does NOT count as keepalive. Observed in field logs: every session
@@ -318,6 +323,8 @@ class EybondManager:
         self._sessions_by_pn: dict[str, _Session] = {}
         self._ready_by_pn: dict[str, asyncio.Event] = {}
         self._any_ready = asyncio.Event()
+        # Monotonic deadline for a forced-rediscovery window (0 = inactive).
+        self._force_announce_until: float = 0.0
         self._start_lock = asyncio.Lock()
         # Sticky bind-failure state — keeps the log clean instead of
         # retrying every coordinator tick when port 8899 is held by
@@ -486,12 +493,30 @@ class EybondManager:
         Once satisfied the announcer goes quiet and sessions stay stable
         (kept alive by the per-session heartbeat). It resumes automatically
         when an expected dongle drops.
+
+        A forced-rediscovery window (see :meth:`force_rediscovery`) overrides
+        the gate and broadcasts regardless of connection state.
         """
+        if self._force_announce_until:
+            if asyncio.get_running_loop().time() < self._force_announce_until:
+                return True
+            self._force_announce_until = 0.0  # window elapsed
+
         connected = set(self._sessions_by_pn)
         expected = set(self.registry.enabled_pns())
         if expected:
             return bool(expected - connected)
         return not connected
+
+    def force_rediscovery(self, duration: float = REDISCOVERY_WINDOW) -> None:
+        """Broadcast ``set>server`` for ``duration`` seconds regardless of
+        connection state, so brand-new dongles can be discovered on demand."""
+        loop = asyncio.get_running_loop()
+        self._force_announce_until = loop.time() + duration
+        _LOGGER.info(
+            "EyBond: forced rediscovery for %.0fs on %s:%d",
+            duration, self.bind_host, self.bind_port,
+        )
 
     async def _announce_loop(self) -> None:
         if self.announce_ip:

@@ -898,8 +898,26 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         return self.async_show_menu(
             step_id="init",
-            menu_options=["devices", "listener"],
+            menu_options=["devices", "rescan", "listener"],
         )
+
+    async def async_step_rescan(self, user_input=None):
+        """Force a discovery scan so new dongles attach (briefly flaps
+        connected ones — broadcast can't target a single dongle)."""
+        if user_input is not None:
+            from .api.protocols.eybond_dongle import get_eybond_manager
+            from .eybond_hub import hub_listener_config
+
+            bind_host, bind_port, broadcast, announce_ip = hub_listener_config(
+                self._config_entry
+            )
+            manager = await get_eybond_manager(
+                bind_host, bind_port, broadcast, announce_ip
+            )
+            manager.force_rediscovery()
+            return self.async_abort(reason="rescan_started")
+
+        return self.async_show_form(step_id="rescan", data_schema=vol.Schema({}))
 
     async def async_step_devices(self, user_input=None):
         runtime = self._runtime()

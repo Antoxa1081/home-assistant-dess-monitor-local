@@ -391,6 +391,31 @@ class TestMultiSession:
 
         asyncio.run(scenario())
 
+    def test_force_rediscovery_overrides_gating(self):
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.connected)
+            # No enabled children + one connected → normally paused.
+            assert mgr._should_announce() is False
+
+            # Force a scan → announce regardless of connection state.
+            mgr.force_rediscovery(60.0)
+            assert mgr._should_announce() is True
+
+            # Once the window elapses it returns to the gated behaviour and
+            # the deadline is cleared.
+            loop = asyncio.get_running_loop()
+            mgr._force_announce_until = loop.time() - 1.0
+            assert mgr._should_announce() is False
+            assert mgr._force_announce_until == 0.0
+
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
     def test_request_times_out_when_no_dongle(self):
         async def scenario():
             mgr = _new_manager()

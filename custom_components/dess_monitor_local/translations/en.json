@@ -92,7 +92,8 @@
     "abort": {
       "no_devices": "No EyBond dongles have been discovered yet. Power on a dongle on the same network and wait for it to connect, then try again.",
       "dongle_offline": "The dongle is not currently connected, so its serial number (PN) can't be captured for migration. Wait until it is online, then try again.",
-      "not_eybond": "This entry is not an EyBond device, so it can't be converted to a hub."
+      "not_eybond": "This entry is not an EyBond device, so it can't be converted to a hub.",
+      "rescan_started": "Scanning for new dongles for about a minute. New dongles will appear under 'Manage discovered devices'."
     },
     "error": {
       "host_required": "Host/IP is required for this transport",
@@ -104,10 +105,15 @@
         "title": "EyBond options",
         "menu_options": {
           "devices": "Manage discovered devices",
+          "rescan": "Scan for new dongles",
           "listener": "Listener settings",
           "edit": "Edit connection",
           "migrate_hub": "Convert to EyBond hub"
         }
+      },
+      "rescan": {
+        "title": "Scan for new dongles",
+        "description": "Broadcasts the discovery beacon for about a minute so new EyBond dongles on the network attach and get discovered. Already-connected dongles may briefly reconnect during the scan (the beacon can't target a single dongle). Submit to start."
       },
       "migrate_hub": {
         "title": "Convert to EyBond hub",
