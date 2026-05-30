@@ -361,3 +361,63 @@ class TestMultiSession:
             await _drain(mgr)
 
         asyncio.run(scenario())
+
+
+class TestDiscoveryIntegration:
+    """The manager feeds its discovery registry from session lifecycle."""
+
+    def test_identify_records_connected(self):
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.registry.connected_pns() == ["PN0000000001"])
+            rec = mgr.registry.get("PN0000000001")
+            assert rec.peer == "10.0.0.1:1111"
+            assert rec.first_seen and rec.last_seen
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_disconnect_marks_record_disconnected(self):
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.registry.connected_pns() == ["PN0000000001"])
+            r.feed_eof()
+            await _until(lambda: not mgr.connected)
+            # Record persists across disconnect, now marked disconnected.
+            assert mgr.registry.connected_pns() == []
+            assert mgr.registry.get("PN0000000001") is not None
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_same_pn_reconnect_stays_connected(self):
+        async def scenario():
+            mgr = _new_manager()
+            r1, w1 = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            t1 = asyncio.create_task(mgr._handle_session(r1, w1))
+            r1.feed(_dongle_heartbeat("PN_DUP000001"))
+            await _until(lambda: mgr.registry.connected_pns() == ["PN_DUP000001"])
+
+            r2, w2 = _FakeReader(), _FakeWriter(("10.0.0.1", 5555))
+            t2 = asyncio.create_task(mgr._handle_session(r2, w2))
+            r2.feed(_dongle_heartbeat("PN_DUP000001"))
+            await _until(
+                lambda: mgr._sessions_by_pn.get("PN_DUP000001")
+                and mgr._sessions_by_pn["PN_DUP000001"].peer == "10.0.0.1:5555"
+            )
+            # The stale session's teardown must NOT flip the record to
+            # disconnected — the PN is still live via the new session.
+            r1.feed_eof()
+            await _until(lambda: w1.closed)
+            await asyncio.sleep(0.05)
+            assert mgr.registry.connected_pns() == ["PN_DUP000001"]
+            assert mgr.registry.get("PN_DUP000001").peer == "10.0.0.1:5555"
+            await _drain(mgr, t1, t2)
+
+        asyncio.run(scenario())

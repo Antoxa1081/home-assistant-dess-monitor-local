@@ -338,11 +338,43 @@ Implementation notes / decisions:
 
 This phase does not change the entity model.
 
-### Phase 2: Discovery registry
+### Phase 2: Discovery registry — ✅ DONE
 
-Add discovery storage and lifecycle tracking.
+Added a per-hub discovery registry in
+`api/protocols/eybond_discovery.py` (`DongleStatus`, `DongleRecord`,
+`EybondRegistry`). Pure module — no HA imports, injectable clock — so it
+unit-tests without `hass` and serializes straight into a store in Phase 3.
 
-Deliverables:
+Delivered:
+
+- discovered `PN` records (`DongleRecord`: `pn`, `name`, `enabled`,
+  `protocol`, `devaddr`, `status`, `peer`, `first_seen`, `last_seen`,
+  `model_hint`)
+- `first_seen` / `last_seen` lifecycle timestamps (ISO-8601 strings)
+- session status (`connected` / `disconnected`)
+- enable/disable + protocol/devaddr/name configuration setters (records may
+  be pre-configured before a dongle first connects)
+- `enabled_pns()` / `connected_pns()` queries (foundation for Phase 4 polling)
+- `to_dict()` / `load()` JSON round-trip for the Phase 3 store
+
+Manager wiring (`EybondManager`):
+
+- owns `self.registry: EybondRegistry` (one per hub)
+- `record_seen(pn, peer)` on identify and on every subsequent heartbeat
+  (keeps `last_seen` current); preserves user config on existing records
+- `mark_disconnected(pn)` on session teardown — **skipped** when the PN was
+  already re-claimed by a same-PN reconnect (record stays `connected`)
+- `discovered` property exposes `registry.all()`
+
+Defaults chosen: newly discovered dongles are `enabled = False` with
+`protocol = None` (unconfigured / not polled) — see resolved open question
+below. Tests: `tests/test_eybond_discovery.py` (registry unit tests) and
+`tests/test_eybond_dongle.py::TestDiscoveryIntegration` (manager feeds the
+registry across connect / disconnect / same-PN reconnect).
+
+This phase does not change the entity model.
+
+Original deliverables (all met):
 
 - discovered `PN` records
 - `last_seen`
@@ -429,7 +461,9 @@ cannot be implemented cleanly.
   or missing configured dongles? — **Decided in Phase 1: continuous.** Simpler
   and safer; lets new dongles attach at any time. Can be revisited if the
   broadcast traffic ever proves problematic.
-- Should newly discovered devices default to `enabled = false` until explicitly
-  configured?
+- ✅ Should newly discovered devices default to `enabled = false` until
+  explicitly configured? — **Decided in Phase 2: yes.** A freshly discovered
+  `DongleRecord` is `enabled = False` with `protocol = None`, so unconfigured
+  dongles are tracked but not polled and create no noisy entities.
 - Do we want protocol auto-probe later as an optional action, while keeping
   manual assignment as the default?

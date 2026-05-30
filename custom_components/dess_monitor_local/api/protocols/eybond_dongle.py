@@ -45,6 +45,7 @@ from urllib.parse import parse_qs, urlparse
 from ...const import PROTOCOL_PI18
 from ..crc import build_pi30_frame
 from ..decoders.pi18 import build_request_frame
+from .eybond_discovery import EybondRegistry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -268,6 +269,7 @@ class EybondManager:
         bind_port: int,
         broadcast: str,
         announce_ip: str | None = None,
+        registry: EybondRegistry | None = None,
     ) -> None:
         self.bind_host = bind_host
         self.bind_port = bind_port
@@ -275,6 +277,9 @@ class EybondManager:
         # Explicit override for the IP advertised in the UDP payload.
         # ``None`` falls back to :func:`_detect_local_ip`.
         self.announce_ip = announce_ip
+        # Discovery registry: lifecycle + per-device config keyed by PN.
+        # Owned by the hub; survives session churn (Phase 2).
+        self.registry = registry or EybondRegistry()
         self._server: asyncio.AbstractServer | None = None
         self._announce_task: asyncio.Task | None = None
         # Multi-session state: a single TCP listener accepts many dongles
@@ -300,6 +305,11 @@ class EybondManager:
     def identified_pns(self) -> list[str]:
         """PNs of currently connected, identified dongles."""
         return sorted(self._sessions_by_pn)
+
+    @property
+    def discovered(self) -> list:
+        """All dongles ever discovered on this hub (lifecycle records)."""
+        return self.registry.all()
 
     def _ready_event_for(self, pn: str) -> asyncio.Event:
         ev = self._ready_by_pn.get(pn)
@@ -547,12 +557,16 @@ class EybondManager:
                             )
                         self._sessions_by_pn[pn] = sess
                         self._ready_event_for(pn).set()
+                        self.registry.record_seen(pn, peer_str)
                         _LOGGER.info(
                             "EyBond: dongle identified, PN=%s peer=%s "
                             "(now %d session(s): %s)",
                             pn, peer_str, len(self._sessions), self.identified_pns,
                         )
                     else:
+                        if sess.pn:
+                            # Refresh last_seen so discovery liveness stays current.
+                            self.registry.record_seen(sess.pn, peer_str)
                         _LOGGER.debug(
                             "EyBond: heartbeat ack from %s (PN=%s)", peer_str, sess.pn
                         )
@@ -590,6 +604,10 @@ class EybondManager:
             # Disconnecting one dongle must not affect the others. Drop only
             # this session; the announcer keeps running for re-attach.
             self._drop_session(sess, "dongle disconnected")
+            # Mark the dongle disconnected in discovery — unless its PN was
+            # already claimed by a same-PN reconnect (still mapped → live).
+            if sess.pn and sess.pn not in self._sessions_by_pn:
+                self.registry.mark_disconnected(sess.pn)
             try:
                 writer.close()
             except Exception:
