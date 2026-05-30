@@ -464,3 +464,94 @@ class TestSnapshotDerivedMigration:
         _neutralise_write(ent)
         ent._handle_coordinator_update()
         assert ent._prev_power == pytest.approx(594.0)
+
+
+class TestPI18ExtrasMigration:
+    """Phase C group 5b: the PI18-only sensors (PV2, MPPT temps, direction /
+    status enums — all folded into qpigs) read from the typed snapshot."""
+
+    def test_pv2_voltage_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+            PvInput,
+        )
+        snap = DeviceSnapshot(metrics=Metrics(pv2=PvInput(voltage=120.5)))
+        ent = ds.DirectPV2InputVoltageSensor(
+            _Dev(), _SnapCoord({"qpigs": {"pv2_input_voltage": "0.0"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 120.5
+
+    def test_pv2_none_goes_unavailable(self):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        # Single-MPPT device: pv2 is None → the PV2 sensor reports nothing.
+        snap = DeviceSnapshot(metrics=Metrics(pv2=None))
+        ent = ds.DirectPV2InputPowerSensor(
+            _Dev(), _SnapCoord({"qpigs": {"pv2_input_power": "0"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value is None
+
+    def test_mppt_temperature_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        snap = DeviceSnapshot(metrics=Metrics(temp_mppt1=47.0))
+        ent = ds.DirectMPPT1TemperatureSensor(
+            _Dev(), _SnapCoord({"qpigs": {"mppt1_temperature": "99"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 47.0
+
+    def test_mppt_status_enum_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.decoders.enums import (
+            PI18MPPTStatus,
+        )
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        snap = DeviceSnapshot(metrics=Metrics(mppt1_status=PI18MPPTStatus.Charging))
+        ent = ds.DirectMPPT1StatusSensor(
+            _Dev(), _SnapCoord({"qpigs": {"mppt1_status": "Abnormal"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Charging"  # snapshot wins over legacy
+
+    def test_battery_power_direction_from_snapshot(self):
+        from custom_components.dess_monitor_local.api.decoders.enums import (
+            PI18BatteryPowerDirection,
+        )
+        from custom_components.dess_monitor_local.api.model import (
+            DeviceSnapshot,
+            Metrics,
+        )
+        snap = DeviceSnapshot(
+            metrics=Metrics(
+                battery_power_direction=PI18BatteryPowerDirection.Discharging
+            )
+        )
+        ent = ds.DirectBatteryPowerDirectionSensor(
+            _Dev(), _SnapCoord({"qpigs": {"battery_power_direction": "Idle"}}, snap)
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == "Discharging"
+
+    def test_pi18_extras_legacy_fallback(self):
+        # No snapshot → parse the folded qpigs string exactly as before.
+        ent = ds.DirectPV2InputVoltageSensor(
+            _Dev(), _Coord({"qpigs": {"pv2_input_voltage": "118.3"}})
+        )
+        _neutralise_write(ent)
+        ent._handle_coordinator_update()
+        assert ent._attr_native_value == 118.3

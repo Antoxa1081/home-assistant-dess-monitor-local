@@ -145,6 +145,18 @@ _SNAPSHOT_FIELD = {
     ("qpigs", "pv_charging_power"): lambda s: s.metrics.pv1.power,
     ("qpigs", "scc_battery_voltage"): lambda s: s.metrics.scc_battery_voltage,
     ("qpigs", "grid_ac_in_power"): lambda s: s.metrics.grid_power,
+    # PI18 extras (Phase C group 5b): second MPPT / PV2, folded into qpigs.
+    # pv2 is ``PvInput | None`` (None when the device has no second input),
+    # so the accessors null-guard before dereferencing.
+    ("qpigs", "pv2_input_voltage"):
+        lambda s: s.metrics.pv2.voltage if s.metrics.pv2 else None,
+    ("qpigs", "pv2_input_current"):
+        lambda s: s.metrics.pv2.current if s.metrics.pv2 else None,
+    ("qpigs", "pv2_input_power"):
+        lambda s: s.metrics.pv2.power if s.metrics.pv2 else None,
+    ("qpigs", "scc2_battery_voltage"): lambda s: s.metrics.scc2_battery_voltage,
+    ("qpigs", "mppt1_temperature"): lambda s: s.metrics.temp_mppt1,
+    ("qpigs", "mppt2_temperature"): lambda s: s.metrics.temp_mppt2,
     # qpiri — device ratings / nameplate (Phase C group 2)
     ("qpiri", "rated_grid_voltage"): lambda s: s.ratings.grid_voltage,
     ("qpiri", "rated_input_current"): lambda s: s.ratings.input_current,
@@ -175,6 +187,12 @@ _SNAPSHOT_ENUM_FIELD = {
     ("qpiri", "output_source_priority"): lambda s: s.ratings.output_source_priority,
     ("qpiri", "charger_source_priority"): lambda s: s.ratings.charger_source_priority,
     ("qpiri", "parallel_mode"): lambda s: s.ratings.parallel_mode,
+    # PI18 direction / sub-status enums (Phase C group 5b), folded into qpigs.
+    ("qpigs", "mppt1_status"): lambda s: s.metrics.mppt1_status,
+    ("qpigs", "mppt2_status"): lambda s: s.metrics.mppt2_status,
+    ("qpigs", "battery_power_direction"): lambda s: s.metrics.battery_power_direction,
+    ("qpigs", "dcac_power_direction"): lambda s: s.metrics.dcac_power_direction,
+    ("qpigs", "line_power_direction"): lambda s: s.metrics.line_power_direction,
 }
 
 
