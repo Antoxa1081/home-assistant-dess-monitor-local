@@ -236,11 +236,14 @@ that *reproduces today's output including the placeholders*, and make the old
 read per cycle, entities byte-identical, SMG-II 6× redundancy gone. Fully
 unit-testable (snapshot per protocol from canned input).
 
-**Phase B — coordinator stores the snapshot.**
-Coordinator calls `get_snapshot()` once per device, keeps the derived legacy
-sections in `coordinator.data[id]` (entities unchanged) AND stores the
-`DeviceSnapshot` at `coordinator.data[id]["snapshot"]`. Failure tracking moves
-to per-snapshot. Entities can now start reading the model.
+**Phase B — coordinator stores the snapshot. ✅ DONE.**
+Implemented additively to avoid any behaviour change or extra transport: each
+adapter has `snapshot_from_sections(sections)` (sync, no I/O); the coordinator
+derives `DeviceSnapshot` per device from the sections it already fetched
+(post-FailureTracker, so it reflects frozen/last-known data) and stores them
+in `DirectCoordinator.snapshots[id]` (NOT in `coordinator.data`, which stays
+JSON-serialisable for diagnostics). Entities still read the legacy sections;
+the snapshots are ready for Phase C.
 
 **Phase C — migrate entities group by group.**
 Move sensor groups to read `snapshot` fields directly (real `None` for absent),
