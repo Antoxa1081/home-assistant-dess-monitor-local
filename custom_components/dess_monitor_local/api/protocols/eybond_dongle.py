@@ -77,7 +77,12 @@ ANNOUNCE_INTERVAL = 5.0
 # reconnect churn. Send well inside that window.
 HEARTBEAT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 5.0
-SESSION_WAIT_TIMEOUT = 30.0
+# How long a request waits for its dongle to (re)connect before giving up.
+# Kept short: requests are serialized through one shared command queue, so a
+# long wait on an absent dongle stalls polling of every other device. The
+# coordinator simply retries next cycle, and a connected dongle answers
+# immediately. (Was 30s — that made one absent dongle freeze the whole hub.)
+SESSION_WAIT_TIMEOUT = 3.0
 
 # After a bind failure, suppress further bind attempts for this many
 # seconds to keep the log from drowning in retries on every coordinator

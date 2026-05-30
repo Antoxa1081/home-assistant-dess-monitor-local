@@ -192,3 +192,51 @@ class TestEybondModbusTransport:
         with patch.object(modadapter, "send_eybond_bytes", side_effect=fake_send):
             with pytest.raises(ConnectionError):
                 asyncio.run(t.read_block(201, 2))
+
+
+class TestSnapshotCache:
+    def test_one_read_serves_all_commands_within_ttl(self):
+        calls = {"n": 0}
+
+        async def fake_snapshot(read_block):
+            calls["n"] += 1
+            return (dict(_SENSORS), dict(_CONFIG), {})
+
+        modadapter._clear_snapshot_cache()
+        uri = "eybond-modbus://0.0.0.0:8899/1?pn=PN_CACHE"
+        with patch.object(modadapter, "read_smg2_snapshot_via", side_effect=fake_snapshot):
+            # New adapter per command (matches real dispatch), same URI.
+            for cmd in ("QPIGS", "QPIRI", "QMOD", "QPIGS2", "QPIWS", "QFWS"):
+                out = asyncio.run(modadapter.ModbusAdapter(uri).get_data(cmd))
+                assert out is not None
+        # All six commands of a cycle shared a single snapshot read.
+        assert calls["n"] == 1
+
+    def test_distinct_uris_cache_independently(self):
+        calls = {"n": 0}
+
+        async def fake_snapshot(read_block):
+            calls["n"] += 1
+            return (dict(_SENSORS), dict(_CONFIG), {})
+
+        modadapter._clear_snapshot_cache()
+        with patch.object(modadapter, "read_smg2_snapshot_via", side_effect=fake_snapshot):
+            asyncio.run(modadapter.ModbusAdapter("eybond-modbus://0.0.0.0:8899/1?pn=A").get_data("QPIGS"))
+            asyncio.run(modadapter.ModbusAdapter("eybond-modbus://0.0.0.0:8899/2?pn=B").get_data("QPIGS"))
+        assert calls["n"] == 2
+
+    def test_failed_snapshot_cached_as_empty(self):
+        calls = {"n": 0}
+
+        async def boom(read_block):
+            calls["n"] += 1
+            raise ConnectionError("dongle gone")
+
+        modadapter._clear_snapshot_cache()
+        uri = "eybond-modbus://0.0.0.0:8899/1?pn=PN_FAIL"
+        with patch.object(modadapter, "read_smg2_snapshot_via", side_effect=boom):
+            a = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIGS"))
+            b = asyncio.run(modadapter.ModbusAdapter(uri).get_data("QPIRI"))
+        assert a == {} and b == {}
+        # Failure cached too — not re-hammered for every command in the cycle.
+        assert calls["n"] == 1

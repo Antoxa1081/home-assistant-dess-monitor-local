@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ..decoders.enums import (
     ChargeSourcePrioritySetting,
@@ -25,6 +26,41 @@ from .base import BaseAdapter
 _LOGGER = logging.getLogger(__name__)
 
 _EYBOND_MODBUS_SCHEME = "eybond-modbus://"
+
+# The coordinator reads SMG-II via six Voltronic-shaped commands per cycle
+# (QPIGS/QPIRI/QMOD/QPIGS2/QPIWS/QFWS), and each historically re-read the full
+# 3-block register snapshot — 18 Modbus transactions per device per cycle.
+# Over an EyBond dongle (half-duplex RS485) that hammering both starves the
+# bus and multiplies the chance of a missed reply (which makes the dongle drop
+# the TCP session). Cache the snapshot briefly so all commands of one poll
+# cycle share a single read. TTL is short enough that data stays fresh at the
+# default poll interval; very short intervals are effectively rate-limited to
+# it (fine — inverter state changes slowly).
+_SNAPSHOT_TTL = 5.0
+# key (device uri) -> (monotonic_ts, snapshot tuple | None)
+_SNAPSHOT_CACHE: dict[str, tuple[float, tuple | None]] = {}
+
+
+def _clear_snapshot_cache() -> None:
+    """Drop all cached snapshots (used by tests)."""
+    _SNAPSHOT_CACHE.clear()
+
+
+async def _cached_snapshot(cache_key: str, read_block):
+    """Return the SMG-II snapshot for ``cache_key``, reading at most once per
+    TTL. A failed read is cached too (as ``None``) so a single dropped cycle
+    doesn't re-hammer the bus with six failing reads."""
+    now = time.monotonic()
+    entry = _SNAPSHOT_CACHE.get(cache_key)
+    if entry is not None and (now - entry[0]) < _SNAPSHOT_TTL:
+        return entry[1]
+    try:
+        snapshot = await read_smg2_snapshot_via(read_block)
+    except Exception as err:  # noqa: BLE001 — transport/parse failure
+        _LOGGER.debug("ModbusAdapter snapshot read failed: %s", err)
+        snapshot = None
+    _SNAPSHOT_CACHE[cache_key] = (now, snapshot)
+    return snapshot
 
 
 class _TcpModbusTransport:
@@ -95,14 +131,10 @@ class ModbusAdapter(BaseAdapter):
         return _TcpModbusTransport(self.uri)
 
     async def get_data(self, command: str) -> dict:
-        try:
-            transport = self._transport()
-            sensors, config, faults = await read_smg2_snapshot_via(
-                transport.read_block
-            )
-        except Exception as err:
-            _LOGGER.debug("ModbusAdapter read failed: %s", err)
+        snapshot = await _cached_snapshot(self.uri, self._transport().read_block)
+        if snapshot is None:
             return {}
+        sensors, config, faults = snapshot
 
         if command == "QPIGS":
             return smg2_to_qpigs(sensors)
