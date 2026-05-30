@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..crc import crc16_xmodem_bytes
+from ..model import DeviceSnapshot, Faults, PvInput, WarningKey
 from .enums import (
     ACInputVoltageRange,
     BatteryType,
@@ -35,6 +36,7 @@ from .enums import (
     PI18LinePowerDirection,
     PI18MPPTStatus,
 )
+from .voltronic import _enum_by_name, _flt, voltronic_to_snapshot
 
 
 def _enum_name(enum_cls, code: str, default: str = "Idle") -> str:
@@ -627,3 +629,65 @@ def decode_pi18_response(command: str, raw: bytes) -> dict[str, Any]:
 
     # Fallback for commands we encode but don't decode in detail yet.
     return {"raw_tokens": tokens}
+
+
+# ---------------------------------------------------------------------------
+# Domain-model projection. Reuses the Voltronic mapping for the shared fields,
+# then adds PI18 extras (PV2, dual MPPT temps, directions) and drops PI18's
+# fabricated values (bus_voltage="400", parallel placeholders). Faults come
+# from the FWS section. See wiki/Domain-Model-Refactor-Plan.md.
+# ---------------------------------------------------------------------------
+def pi18_to_snapshot(sections: dict) -> DeviceSnapshot:
+    qpigs = sections.get("qpigs") or {}
+    qpiri = sections.get("qpiri") or {}
+    qmod = sections.get("qmod") or {}
+    qfws = sections.get("qfws") or {}
+
+    # Shared mapping (QPIGS/QPIRI/QMOD); PI18 PV2 lives in QPIGS, not QPIGS2,
+    # so the reused mapper sees no QPIGS2 and we set PV2 ourselves below.
+    snap = voltronic_to_snapshot(
+        {"qpigs": qpigs, "qpiri": qpiri, "qmod": qmod, "qpiws": {}, "qpigs2": {}}
+    )
+    m, r = snap.metrics, snap.ratings
+
+    # Drop PI18 fabrications.
+    m.bus_voltage = None                 # PI18 has no bus register (was "400")
+    r.parallel_mode = None               # was "Standalone"
+    r.parallel_max_number = None         # placeholder
+    r.battery_capacity_ah = None         # was "200"
+
+    # PI18 extras.
+    pv2_v = _flt(qpigs, "pv2_input_voltage")
+    pv2_c = _flt(qpigs, "pv2_input_current")
+    pv2_p = _flt(qpigs, "pv2_input_power")
+    if pv2_v is not None or pv2_c is not None or pv2_p is not None:
+        m.pv2 = PvInput(voltage=pv2_v, current=pv2_c, power=pv2_p)
+    m.scc2_battery_voltage = _flt(qpigs, "scc2_battery_voltage")
+    m.temp_mppt1 = _flt(qpigs, "mppt1_temperature")
+    m.temp_mppt2 = _flt(qpigs, "mppt2_temperature")
+    m.mppt1_status = _enum_by_name(PI18MPPTStatus, qpigs.get("mppt1_status"))
+    m.mppt2_status = _enum_by_name(PI18MPPTStatus, qpigs.get("mppt2_status"))
+    m.battery_power_direction = _enum_by_name(
+        PI18BatteryPowerDirection, qpigs.get("battery_power_direction")
+    )
+    m.dcac_power_direction = _enum_by_name(
+        PI18DCACPowerDirection, qpigs.get("dcac_power_direction")
+    )
+    m.line_power_direction = _enum_by_name(
+        PI18LinePowerDirection, qpigs.get("line_power_direction")
+    )
+
+    # Faults from the FWS section (warn_* flags + numeric fault code).
+    snap.faults = Faults(
+        warnings=WarningKey.from_flags(qfws),
+        fault_code=qfws.get("fault_code"),
+        fault_description=qfws.get("fault_description"),
+    )
+
+    snap.capabilities |= {"directions", "mppt_temp"}
+    if m.pv2 is not None:
+        snap.capabilities.add("pv2")
+    if m.scc2_battery_voltage is not None:
+        snap.capabilities.add("scc2")
+    snap.raw = {"qpigs": qpigs, "qpiri": qpiri, "qmod": qmod, "qfws": qfws}
+    return snap
