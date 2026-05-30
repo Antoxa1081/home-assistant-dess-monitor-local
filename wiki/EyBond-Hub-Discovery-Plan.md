@@ -431,6 +431,14 @@ The hub options flow already lets the user, per discovered dongle:
 
 Edits write the registry → save the Store → bump `CONF_HUB_REVISION` in
 options, which reloads the entry and rebuilds child devices/entities.
+
+Hub visibility: the hub entry always creates a hub device with a
+`Discovered dongles` diagnostic sensor (state = count, attributes = per-dongle
+PN/status/last_seen/enabled/protocol) so the integration is visibly working
+before any child is configured. A one-shot persistent notification fires when
+a brand-new, still-unconfigured dongle appears, nudging the user to assign a
+protocol (seeded from the persisted registry so restarts don't re-notify).
+
 Remaining Phase 5 niceties (force rediscovery, remove stale records, protocol
 auto-probe) are still open.
 

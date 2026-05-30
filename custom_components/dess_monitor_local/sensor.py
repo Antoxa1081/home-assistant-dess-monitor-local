@@ -3,7 +3,12 @@
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from custom_components.dess_monitor_local.const import CONF_PROTOCOL, PROTOCOL_PI18
+from custom_components.dess_monitor_local.const import (
+    CONF_ENTRY_KIND,
+    CONF_PROTOCOL,
+    ENTRY_KIND_EYBOND_HUB,
+    PROTOCOL_PI18,
+)
 from custom_components.dess_monitor_local.sensors.direct_sensor import (
     DIRECT_SENSORS,
     PI18_SENSORS,
@@ -34,6 +39,15 @@ async def async_setup_entry(
     hub = config_entry.runtime_data
     new_devices = []
     entry_protocol = config_entry.options.get(CONF_PROTOCOL)
+
+    # Hub entries get a diagnostic device showing discovered dongles, so the
+    # integration is visibly "working" even before any child is configured.
+    if config_entry.options.get(CONF_ENTRY_KIND) == ENTRY_KIND_EYBOND_HUB:
+        from .sensors.eybond_hub_sensor import EybondHubDiscoverySensor
+
+        new_devices.append(
+            EybondHubDiscoverySensor(hass, hub.direct_coordinator, config_entry)
+        )
 
     for item in hub.items:
         # Per-item protocol (a hub may mix protocols across children); fall

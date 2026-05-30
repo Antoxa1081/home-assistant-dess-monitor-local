@@ -188,6 +188,10 @@ async def test_hub_entry_polls_enabled_child(
         assert any(
             e.unique_id.startswith("eybond:PNTEST000001:1") for e in entities
         ), "expected entities for the enabled child"
+        # The hub device exposes the discovery diagnostic sensor.
+        assert any(
+            e.unique_id == "eybond_hub:eybondhub1:discovered" for e in entities
+        ), "expected the hub discovery sensor"
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
