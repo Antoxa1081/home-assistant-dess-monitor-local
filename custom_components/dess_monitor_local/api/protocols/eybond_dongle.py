@@ -6,10 +6,11 @@ Unlike the other transports, the dongle initiates the TCP connection to
 us. We:
 
   1. Bind a TCP listener on the configured port (default 8899).
-  2. Broadcast ``set>server=<MY_IP>:<port>;`` on UDP/58899 every 5s
-     continuously — that command tells dongles to switch upstream from the
-     SmartESS cloud to us, and keeping it running lets additional dongles
-     attach at any time.
+  2. Broadcast ``set>server=<MY_IP>:<port>;`` on UDP/58899 every 5s while an
+     expected dongle is still missing — that command tells dongles to switch
+     upstream from the SmartESS cloud to us. We STOP broadcasting once the
+     expected dongles are connected: each broadcast makes a dongle reconnect,
+     so announcing at an already-connected one flaps it offline.
   3. Accept multiple dongle connections on one listener. Each session is
      kept alive with FC=1 heartbeats and identified by the ``PN`` carried
      in the dongle's own heartbeat.
@@ -411,8 +412,9 @@ class EybondManager:
                     "EyBond: TCP listener already running on %s:%d",
                     self.bind_host, self.bind_port,
                 )
-            # The announcer runs continuously so additional dongles can
-            # discover us and attach at any time (multi-session model).
+            # The announcer task stays alive, but only actually broadcasts
+            # while an expected dongle is missing (see _should_announce) —
+            # broadcasting at a connected dongle makes it reconnect.
             if self._announce_task is None or self._announce_task.done():
                 self._announce_task = asyncio.create_task(self._announce_loop())
 
@@ -460,6 +462,28 @@ class EybondManager:
                 self.bind_host, self.bind_port,
             )
 
+    def _should_announce(self) -> bool:
+        """Whether to keep broadcasting ``set>server``.
+
+        Each announce makes the EyBond dongle (re)connect — so broadcasting
+        to an already-connected dongle knocks it offline and it reconnects,
+        causing constant flapping (field-observed ~5s churn). We therefore
+        announce only while a dongle we actually want is still missing:
+
+        - hub with enabled children: until every enabled PN is connected;
+        - otherwise (legacy single-device / pre-config discovery): until at
+          least one dongle is connected.
+
+        Once satisfied the announcer goes quiet and sessions stay stable
+        (kept alive by the per-session heartbeat). It resumes automatically
+        when an expected dongle drops.
+        """
+        connected = set(self._sessions_by_pn)
+        expected = set(self.registry.enabled_pns())
+        if expected:
+            return bool(expected - connected)
+        return not connected
+
     async def _announce_loop(self) -> None:
         if self.announce_ip:
             announce_ip = self.announce_ip
@@ -494,18 +518,29 @@ class EybondManager:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setblocking(False)
+        was_paused = False
         try:
             while True:
-                try:
-                    sock.sendto(payload, (self.broadcast, UDP_PORT))
-                    _LOGGER.debug(
-                        "EyBond: UDP -> %s:%d %r",
-                        self.broadcast, UDP_PORT, payload.decode(),
-                    )
-                except OSError as err:
-                    _LOGGER.warning(
-                        "EyBond: UDP send failed (target %s:%d): %s",
-                        self.broadcast, UDP_PORT, err,
+                if self._should_announce():
+                    was_paused = False
+                    try:
+                        sock.sendto(payload, (self.broadcast, UDP_PORT))
+                        _LOGGER.debug(
+                            "EyBond: UDP -> %s:%d %r",
+                            self.broadcast, UDP_PORT, payload.decode(),
+                        )
+                    except OSError as err:
+                        _LOGGER.warning(
+                            "EyBond: UDP send failed (target %s:%d): %s",
+                            self.broadcast, UDP_PORT, err,
+                        )
+                elif not was_paused:
+                    # Don't keep knocking connected dongles offline.
+                    was_paused = True
+                    _LOGGER.info(
+                        "EyBond: announce PAUSED — expected dongle(s) connected "
+                        "(%s); will resume if one drops",
+                        self.identified_pns,
                     )
                 await asyncio.sleep(ANNOUNCE_INTERVAL)
         except asyncio.CancelledError:

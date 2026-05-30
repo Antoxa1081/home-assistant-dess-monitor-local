@@ -365,6 +365,32 @@ class TestMultiSession:
 
         asyncio.run(scenario())
 
+    def test_announce_gating(self):
+        async def scenario():
+            mgr = _new_manager()
+            # No sessions, no expected dongles → announce (discovery).
+            assert mgr._should_announce() is True
+
+            # A dongle connects (legacy / no enabled children) → stop.
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.connected)
+            assert mgr._should_announce() is False
+
+            # Mark two PNs as expected (enabled children); one is missing.
+            mgr.registry.set_enabled("PN0000000001", True)
+            mgr.registry.set_enabled("PN_MISSING002", True)
+            assert mgr._should_announce() is True  # PN_MISSING002 absent
+
+            # Once the missing one is no longer expected, announce stops again.
+            mgr.registry.set_enabled("PN_MISSING002", False)
+            assert mgr._should_announce() is False
+
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
     def test_request_times_out_when_no_dongle(self):
         async def scenario():
             mgr = _new_manager()
