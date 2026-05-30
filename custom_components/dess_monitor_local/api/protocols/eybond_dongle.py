@@ -69,7 +69,12 @@ DEFAULT_BROADCAST = "255.255.255.255"
 DEFAULT_BIND_PORT = 8899
 
 ANNOUNCE_INTERVAL = 5.0
-HEARTBEAT_INTERVAL = 60.0
+# Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
+# if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
+# (FC=4) does NOT count as keepalive. Observed in field logs: every session
+# died ~4.4s after connect with the old 60s interval, causing constant
+# reconnect churn. Send well inside that window.
+HEARTBEAT_INTERVAL = 3.0
 DEFAULT_TIMEOUT = 5.0
 SESSION_WAIT_TIMEOUT = 30.0
 
