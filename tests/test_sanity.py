@@ -3,7 +3,7 @@ that stopped the 1.8 MWh megawatt-spike incident from poisoning the
 energy accumulators."""
 import pytest
 
-from custom_components.dess_monitor_local import sanity
+from custom_components.dess_monitor_local.helpers import sanity
 
 
 class TestBatteryCurrent:

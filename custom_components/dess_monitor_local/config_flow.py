@@ -732,7 +732,7 @@ class OptionsFlow(config_entries.OptionsFlow):
     async def async_step_migrate_hub(self, user_input=None):
         """Convert this legacy eybond entry into a hub entry (opt-in)."""
         if user_input is not None:
-            from . import eybond_hub
+            from .hub import eybond as eybond_hub
 
             result = await eybond_hub.async_migrate_legacy_to_hub(
                 self.hass, self._config_entry
@@ -882,7 +882,7 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
         self._selected_pn: str | None = None
 
     def _runtime(self):
-        from . import eybond_hub
+        from .hub import eybond as eybond_hub
 
         return eybond_hub.get_hub_runtime(self.hass, self._config_entry.entry_id)
 
@@ -906,7 +906,7 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
         connected ones — broadcast can't target a single dongle)."""
         if user_input is not None:
             from .api.protocols.eybond_dongle import get_eybond_manager
-            from .eybond_hub import hub_listener_config
+            from .hub.eybond import hub_listener_config
 
             bind_host, bind_port, broadcast, announce_ip = hub_listener_config(
                 self._config_entry

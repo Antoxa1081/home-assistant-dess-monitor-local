@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ...frame_log import record as _record_frame
+from ...helpers.frame_log import record as _record_frame
 from ..crc import crc16_voltronic, validate_voltronic_response
 
 _LOGGER = logging.getLogger(__name__)

@@ -10,21 +10,21 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.restore_state import ExtraStoredData
 from homeassistant.util import slugify
 
-from custom_components.dess_monitor_local.sanity import (
+from custom_components.dess_monitor_local.helpers.sanity import (
     is_plausible_battery_current,
     is_plausible_battery_voltage,
     is_plausible_power,
     max_step_wh,
 )
-from custom_components.dess_monitor_local.sensors.direct_sensor import (
-    DirectSensorBase,
-    DirectTypedSensorBase,
-)
-from custom_components.dess_monitor_local.soc_core import (
+from custom_components.dess_monitor_local.helpers.soc_core import (
     BATTERY_MODE_LI_BMS,
     DEFAULT_FLOAT_NOISE_FLOOR_A,
     DEFAULT_FLOAT_VOLTAGE_WINDOW_V,
     SocEstimator,
+)
+from custom_components.dess_monitor_local.sensors.direct_sensor import (
+    DirectSensorBase,
+    DirectTypedSensorBase,
 )
 
 _LOGGER = logging.getLogger(__name__)

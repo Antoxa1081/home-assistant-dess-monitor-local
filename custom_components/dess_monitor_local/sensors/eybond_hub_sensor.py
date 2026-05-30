@@ -70,7 +70,7 @@ class EybondHubDiscoverySensor(SensorEntity):
 
     def _registry(self):
         # Lazy import avoids a config_flow/__init__ import cycle.
-        from ..eybond_hub import get_hub_runtime
+        from ..hub.eybond import get_hub_runtime
 
         runtime = get_hub_runtime(self._hass, self._entry_id)
         return runtime.registry if runtime is not None else None

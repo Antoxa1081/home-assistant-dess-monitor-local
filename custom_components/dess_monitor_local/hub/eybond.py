@@ -20,17 +20,17 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .api.protocols.eybond_discovery import (
+from ..api.protocols.eybond_discovery import (
     DongleRecord,
     DongleStatus,
     EybondRegistry,
 )
-from .api.protocols.eybond_dongle import (
+from ..api.protocols.eybond_dongle import (
     get_eybond_manager,
     parse_eybond_uri,
     shutdown_eybond_manager,
 )
-from .const import (
+from ..const import (
     CONF_DEVICE,
     CONF_ENTRY_KIND,
     CONF_EYBOND_ANNOUNCE_IP,
@@ -49,9 +49,9 @@ from .const import (
     PROTOCOL_PI18,
     PROTOCOL_VOLTRONIC,
 )
-from .coordinators.direct_coordinator import DirectCoordinator
-from .coordinators.eybond_children import build_child_targets
-from .hub import Hub
+from ..coordinators.direct_coordinator import DirectCoordinator
+from ..coordinators.eybond_children import build_child_targets
+from . import Hub
 
 _LOGGER = logging.getLogger(__name__)
 

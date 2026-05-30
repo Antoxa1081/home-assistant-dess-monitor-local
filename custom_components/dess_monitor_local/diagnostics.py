@@ -15,7 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .frame_log import snapshot as _frame_snapshot
+from .helpers.frame_log import snapshot as _frame_snapshot
 
 _REDACT_KEYS = {"host", "device", "serial_device", "agent_device_id"}
 

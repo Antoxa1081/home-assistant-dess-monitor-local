@@ -1,5 +1,5 @@
 """Tests for the diagnostic frame ring buffer (frame_log.py)."""
-from custom_components.dess_monitor_local import frame_log
+from custom_components.dess_monitor_local.helpers import frame_log
 
 
 class TestFrameLog:

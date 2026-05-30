@@ -6,15 +6,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from custom_components.dess_monitor_local import frame_log
 from custom_components.dess_monitor_local.api.commands.direct_command_queue import CommandQueue
 from custom_components.dess_monitor_local.api.protocols.eybond_dongle import (
     shutdown_all_eybond_managers,
 )
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
+from custom_components.dess_monitor_local.helpers import frame_log
 
-from . import eybond_hub, hub
+from . import hub
 from .const import CONF_ENTRY_KIND, ENTRY_KIND_DEVICE, ENTRY_KIND_EYBOND_HUB
+from .hub import eybond as eybond_hub
 
 # List of platforms to support. There should be a matching .py file for each,
 # eg <cover.py> and <sensor.py>

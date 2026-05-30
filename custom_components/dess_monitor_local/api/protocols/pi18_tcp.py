@@ -15,7 +15,7 @@ import logging
 
 import serial_asyncio_fast as serial_asyncio
 
-from ...frame_log import record as _record_frame
+from ...helpers.frame_log import record as _record_frame
 from ..crc import validate_pi18_response
 from ..decoders.pi18 import build_request_frame, decode_pi18_response
 

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from custom_components.dess_monitor_local.soc_core import (
+from custom_components.dess_monitor_local.helpers.soc_core import (
     BATTERY_MODE_LEAD_ACID,
     BATTERY_MODE_LI_BMS,
     BATTERY_MODE_LI_VOLTAGE,

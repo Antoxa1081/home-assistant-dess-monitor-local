@@ -178,10 +178,10 @@ async def test_hub_entry_polls_enabled_child(
     entry.add_to_hass(hass)
 
     with patch(
-        "custom_components.dess_monitor_local.eybond_hub.get_eybond_manager",
+        "custom_components.dess_monitor_local.hub.eybond.get_eybond_manager",
         side_effect=_fake_get_manager,
     ), patch(
-        "custom_components.dess_monitor_local.eybond_hub.shutdown_eybond_manager",
+        "custom_components.dess_monitor_local.hub.eybond.shutdown_eybond_manager",
         side_effect=_fake_shutdown_manager,
     ), patch(
         "custom_components.dess_monitor_local.coordinators.direct_coordinator.get_direct_data",
