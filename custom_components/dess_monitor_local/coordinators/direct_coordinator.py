@@ -37,7 +37,24 @@ class DirectCoordinator(DataUpdateCoordinator):
     # then up to N-1 consecutive failures fall back to the last known
     # sub-dict before the entity finally goes to "unavailable".
     _RETRY_DELAY_S = 0.25
-    _MAX_CONSECUTIVE_FAILURES = 3
+    # 6 (not 3): EyBond dongles clean-close every ~4s and reconnect in ~1s, so a
+    # child's poll occasionally lands in a gap and fails. With the now-short
+    # cycles a child reaches 3 consecutive failures in ~30s, flickering entities
+    # to "unavailable" during normal cycling. Tolerate more transient misses —
+    # stay on frozen last-known — before flipping unavailable.
+    _MAX_CONSECUTIVE_FAILURES = 6
+    # Per-command poll cadence (poll every Nth cycle; carry forward in between).
+    # Live telemetry every cycle keeps values fresh and the per-cycle command
+    # count tiny (fits a cycling dongle's brief window → far fewer failures);
+    # static/slow data is refreshed periodically. (cmd, section, every_n_cycles)
+    _CMD_SCHEDULE = (
+        ("QPIGS", "qpigs", 1),    # live telemetry — every cycle
+        ("QMOD", "qmod", 2),      # operating mode — changes slowly
+        ("QPIGS2", "qpigs2", 2),  # 2nd MPPT (often NAK'd)
+        ("QPIWS", "qpiws", 3),    # warnings/faults (PI30)
+        ("QFWS", "qfws", 3),      # warnings/faults (PI18)
+        ("QPIRI", "qpiri", 12),   # ratings/nameplate — essentially static
+    )
     # Per-device poll bound, applied ONLY with multiple devices (an EyBond hub
     # with several children). One stuck/half-attentive dongle answering FC=4
     # slowly used to drag the whole-hub gather past the 120s cycle cap, which
@@ -79,6 +96,8 @@ class DirectCoordinator(DataUpdateCoordinator):
         self._targets = targets
         # Per-(target id, command) consecutive-failure counter + freeze policy.
         self._failures = FailureTracker(self._MAX_CONSECUTIVE_FAILURES)
+        # Cycle counter driving the split poll cadence (see _CMD_SCHEDULE).
+        self._cycle = 0
         # self.my_api = my_api
         # self._device: MyDevice | None = None
 
@@ -187,36 +206,28 @@ class DirectCoordinator(DataUpdateCoordinator):
 
         try:
             async with async_timeout.timeout(120):
+                cycle = self._cycle
+
                 async def fetch_device_data(target):
                     key = target.id
                     uri = target.uri
-                    qpigs = await fetch_with_retry(key, uri, 'QPIGS', 'qpigs')
-                    qpiri = await fetch_with_retry(key, uri, 'QPIRI', 'qpiri')
-                    # QMOD = current operating mode (PowerOn / Standby /
-                    # Line / Battery / Fault). Cheap one-byte answer; gives
-                    # us a real status sensor for automations instead of
-                    # parsing the QPIGS status bits string.
-                    qmod = await fetch_with_retry(key, uri, 'QMOD', 'qmod')
-                    # QPIGS2 = second PV input on dual-MPPT models. Many
-                    # inverters NAK it, in which case fetch_with_retry
-                    # returns {} and the PV2 sensors stay unavailable —
-                    # zero cost for the rest of users.
-                    qpigs2 = await fetch_with_retry(key, uri, 'QPIGS2', 'qpigs2')
-                    # QPIWS = warning/fault bitstring. PI18 inverters NAK
-                    # this and respond to QFWS instead; fetch both — the
-                    # one that doesn't apply just returns ``{}`` and
-                    # downstream sensors stay unavailable.
-                    qpiws = await fetch_with_retry(key, uri, 'QPIWS', 'qpiws')
-                    qfws = await fetch_with_retry(key, uri, 'QFWS', 'qfws')
-                    return key, {
-                        "timestamp": datetime.now(),
-                        'qpigs': qpigs,
-                        'qpiri': qpiri,
-                        'qmod': qmod,
-                        'qpigs2': qpigs2,
-                        'qpiws': qpiws,
-                        'qfws': qfws,
-                    }
+                    prev = prev_data.get(key) or {}
+                    # Split cadence (see _CMD_SCHEDULE): poll live telemetry
+                    # (QPIGS) every cycle so values stay fresh AND the per-cycle
+                    # command count stays small enough to fit a cycling dongle's
+                    # brief connection window; static/rare sections (ratings,
+                    # faults, mode, PV2) are polled every Nth cycle and carried
+                    # forward in between, so a skipped slow command never empties
+                    # a section or trips its failure counter.
+                    sections: dict = {"timestamp": datetime.now()}
+                    for cmd, section, cadence in self._CMD_SCHEDULE:
+                        if cycle % cadence == 0:
+                            sections[section] = await fetch_with_retry(
+                                key, uri, cmd, section
+                            )
+                        else:
+                            sections[section] = prev.get(section) or {}
+                    return key, sections
                     # return device, {
                     #     "timestamp": datetime.now(),
                     #     "qpigs": {
@@ -301,6 +312,7 @@ class DirectCoordinator(DataUpdateCoordinator):
                 data_map = dict(
                     await asyncio.gather(*map(fetch_device_guarded, self.devices))
                 )
+                self._cycle += 1  # advance the split-cadence schedule
                 return data_map
         except TimeoutError as err:
             # Raising ConfigEntryAuthFailed will cancel future updates

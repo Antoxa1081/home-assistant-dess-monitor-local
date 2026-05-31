@@ -115,3 +115,19 @@ def test_coordinator_set_targets_swaps_poll_set():
 
     c.set_targets([t2])  # replaces, not appends
     assert c._targets == [t2] and c.devices == [t2]
+
+
+def test_coordinator_poll_schedule_invariants():
+    # Locks the split-cadence config that keeps live data fresh while small
+    # per-cycle (so a cycling dongle's window is enough) — see _CMD_SCHEDULE.
+    from custom_components.dess_monitor_local.coordinators.direct_coordinator import (
+        DirectCoordinator,
+    )
+    sched = {cmd: n for cmd, _s, n in DirectCoordinator._CMD_SCHEDULE}
+    assert sched["QPIGS"] == 1                 # live telemetry every cycle
+    assert sched["QPIRI"] >= sched["QPIWS"] > sched["QPIGS"]  # static rarer than faults rarer than live
+    # Distinct section per command (no clobbering on carry-forward).
+    sections = [s for _c, s, _n in DirectCoordinator._CMD_SCHEDULE]
+    assert len(sections) == len(set(sections))
+    # Tolerate more transient misses before unavailable (cycling dongles).
+    assert DirectCoordinator._MAX_CONSECUTIVE_FAILURES >= 5
