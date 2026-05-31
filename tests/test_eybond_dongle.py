@@ -418,9 +418,16 @@ class TestMultiSession:
             assert mgr._should_announce() is False
 
             # Mark two PNs as expected (enabled children); one is missing.
+            # The listener has already settled (a dongle connected), so the
+            # missing one is grace-held first (S1 anti-thrash)...
             mgr.registry.set_enabled("PN0000000001", True)
             mgr.registry.set_enabled("PN_MISSING002", True)
-            assert mgr._should_announce() is True  # PN_MISSING002 absent
+            assert mgr._should_announce() is False  # within REANNOUNCE_GRACE
+            # ...then announced once the grace elapses.
+            mgr._missing_since = (
+                asyncio.get_running_loop().time() - ey.REANNOUNCE_GRACE - 1
+            )
+            assert mgr._should_announce() is True
 
             # Once the missing one is no longer expected, announce stops again.
             mgr.registry.set_enabled("PN_MISSING002", False)
@@ -452,6 +459,50 @@ class TestMultiSession:
             assert mgr._force_announce_until == 0.0
 
             await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_grace_before_reannounce_after_drop(self):
+        # S1: once settled, a dropped dongle is NOT re-announced during the
+        # grace window (it self-reconnects), so the broadcast doesn't re-flap
+        # the healthy dongles. After the grace it resumes.
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.connected)
+            mgr.registry.set_enabled("PN0000000001", True)
+            # Settled: expected dongle connected → no announce; ever_connected.
+            assert mgr._should_announce() is False
+            assert mgr._ever_connected is True
+
+            # The dongle drops.
+            r.feed_eof()
+            await _until(lambda: not mgr.connected)
+            # Within grace → held.
+            assert mgr._should_announce() is False
+            # Past grace → resume.
+            mgr._missing_since = (
+                asyncio.get_running_loop().time() - ey.REANNOUNCE_GRACE - 1
+            )
+            assert mgr._should_announce() is True
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_announce_interval_fast_discovery_slow_steady(self):
+        # S1: fast cadence during initial discovery / forced rescan; slow once
+        # the listener has settled, so a persistently-missing dongle doesn't
+        # re-flap the survivors every few seconds.
+        async def scenario():
+            mgr = _new_manager()
+            assert mgr._announce_interval() == ey.ANNOUNCE_INTERVAL
+            mgr._ever_connected = True
+            assert mgr._announce_interval() == ey.STEADY_ANNOUNCE_INTERVAL
+            mgr.force_rediscovery(60.0)
+            assert mgr._announce_interval() == ey.ANNOUNCE_INTERVAL
+            await _drain(mgr)
 
         asyncio.run(scenario())
 

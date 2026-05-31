@@ -79,6 +79,17 @@ ANNOUNCE_CHECK_INTERVAL = 1.0
 # dongles receive ``set>server`` and attach. Briefly flaps connected dongles
 # (broadcast can't target one), which is acceptable for an explicit scan.
 REDISCOVERY_WINDOW = 60.0
+# Anti-thrash (S1). The ``set>server`` broadcast is subnet-wide — it can't
+# target one dongle, so every broadcast re-flaps ALL connected dongles. Once a
+# listener has settled (every expected dongle connected at least once), a
+# dropped dongle already knows us as its server and reconnects on its own, so
+# we DON'T broadcast for ``REANNOUNCE_GRACE`` seconds — long enough for a normal
+# self-reconnect, so a single flapping dongle stops knocking the healthy ones
+# offline. If it stays missing past the grace (genuinely powered off), we
+# re-announce only every ``STEADY_ANNOUNCE_INTERVAL`` (vs the fast discovery
+# cadence) to keep trying without hammering the survivors.
+REANNOUNCE_GRACE = 25.0
+STEADY_ANNOUNCE_INTERVAL = 60.0
 # Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
 # if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
 # (FC=4) does NOT count as keepalive. Observed in field logs: every session
@@ -325,6 +336,11 @@ class EybondManager:
         self._any_ready = asyncio.Event()
         # Monotonic deadline for a forced-rediscovery window (0 = inactive).
         self._force_announce_until: float = 0.0
+        # Anti-thrash (S1): when an expected dongle first went missing (0 =
+        # nothing missing) and whether any dongle has ever connected on this
+        # listener (distinguishes initial discovery from a steady-state drop).
+        self._missing_since: float = 0.0
+        self._ever_connected: bool = False
         self._start_lock = asyncio.Lock()
         # Sticky bind-failure state — keeps the log clean instead of
         # retrying every coordinator tick when port 8899 is held by
@@ -502,16 +518,46 @@ class EybondManager:
         A forced-rediscovery window (see :meth:`force_rediscovery`) overrides
         the gate and broadcasts regardless of connection state.
         """
+        loop = asyncio.get_running_loop()
         if self._force_announce_until:
-            if asyncio.get_running_loop().time() < self._force_announce_until:
+            if loop.time() < self._force_announce_until:
                 return True
             self._force_announce_until = 0.0  # window elapsed
 
         connected = set(self._sessions_by_pn)
+        if connected:
+            self._ever_connected = True
         expected = set(self.registry.enabled_pns())
-        if expected:
-            return bool(expected - connected)
-        return not connected
+        missing = bool(expected - connected) if expected else (not connected)
+
+        if not missing:
+            self._missing_since = 0.0
+            return False
+
+        now = loop.time()
+        if self._missing_since == 0.0:
+            self._missing_since = now
+        # Initial discovery (nothing has ever connected here): broadcast now so
+        # dongles can find us.
+        if not self._ever_connected:
+            return True
+        # Steady state — a previously-connected dongle dropped. Hold off
+        # broadcasting for a grace period so it can self-reconnect without us
+        # re-flapping the healthy dongles (the broadcast is subnet-wide).
+        return (now - self._missing_since) >= REANNOUNCE_GRACE
+
+    def _announce_interval(self) -> float:
+        """Send cadence: fast during initial discovery / forced rescan, slow
+        once settled (a steady-state drop) so a persistently-missing dongle
+        doesn't re-flap the survivors every few seconds."""
+        if not self._ever_connected:
+            return ANNOUNCE_INTERVAL
+        if (
+            self._force_announce_until
+            and asyncio.get_running_loop().time() < self._force_announce_until
+        ):
+            return ANNOUNCE_INTERVAL
+        return STEADY_ANNOUNCE_INTERVAL
 
     def force_rediscovery(self, duration: float = REDISCOVERY_WINDOW) -> None:
         """Broadcast ``set>server`` for ``duration`` seconds regardless of
@@ -572,7 +618,7 @@ class EybondManager:
                         )
                     was_paused = False
                     now = loop.time()
-                    if now - last_send >= ANNOUNCE_INTERVAL:
+                    if now - last_send >= self._announce_interval():
                         last_send = now
                         try:
                             sock.sendto(payload, (self.broadcast, UDP_PORT))
