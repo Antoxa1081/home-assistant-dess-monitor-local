@@ -108,7 +108,8 @@
           "rescan": "Scan for new dongles",
           "listener": "Listener settings",
           "edit": "Edit connection",
-          "migrate_hub": "Convert to EyBond hub"
+          "migrate_hub": "Convert to EyBond hub",
+          "debug_panel": "Debug panel"
         }
       },
       "rescan": {
@@ -172,6 +173,13 @@
           "eybond_announce_ip": "Optional IP address advertised to the dongle. Leave empty for auto-detect.",
           "update_interval": "How often to poll the device. Lower values mean more frequent updates.",
           "strict_crc": "Drop Voltronic/PI18 frames with invalid CRC instead of trying to decode them."
+        }
+      },
+      "debug_panel": {
+        "title": "Debug panel",
+        "description": "Show the admin-only live debug panel in the sidebar. Applied after the integration reloads.",
+        "data": {
+          "debug_panel": "Show debug panel in sidebar"
         }
       }
     }

@@ -33,6 +33,12 @@ CONF_EYBOND_BIND_PORT = "eybond_bind_port"
 # the registry to (re)build child devices/entities.
 CONF_HUB_REVISION = "hub_revision"
 
+# Show the admin-only live debug panel in the sidebar. Stored in a hub entry's
+# options; toggled from Configure -> Debug panel (applied on entry reload).
+# Defaults ON to preserve the behaviour from before the toggle existed.
+CONF_DEBUG_PANEL = "debug_panel"
+DEFAULT_DEBUG_PANEL = True
+
 # Supported protocol identifiers
 PROTOCOL_VOLTRONIC = "voltronic"
 PROTOCOL_MODBUS = "modbus"

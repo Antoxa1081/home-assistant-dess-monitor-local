@@ -17,19 +17,29 @@ import logging
 from pathlib import Path
 
 import voluptuous as vol
-from homeassistant.components import panel_custom, websocket_api
+from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 
 from . import diag_hub, eybond_hub
-from .const import CONF_ENTRY_KIND, DOMAIN, ENTRY_KIND_EYBOND_HUB
+from .const import (
+    CONF_DEBUG_PANEL,
+    CONF_ENTRY_KIND,
+    DEFAULT_DEBUG_PANEL,
+    DOMAIN,
+    ENTRY_KIND_EYBOND_HUB,
+)
 from .diagnostics import _coordinator_section
 
 _LOGGER = logging.getLogger(__name__)
 
 _PANEL_URL_PATH = "dess-debug"
 _STATIC_URL = "/dess_monitor_local/dess_debug_panel.js"
-_REGISTERED = "dess_monitor_local_debug_panel_registered"
+# WS commands + the static JS asset register once per HA instance and stay put
+# (HA has no clean unregister for them; they're idle when no panel subscribes).
+_WS_REGISTERED = "dess_monitor_local_debug_ws_registered"
+# Whether the sidebar panel is currently shown — toggled on/off at runtime.
+_PANEL_REGISTERED = "dess_monitor_local_debug_panel_shown"
 _SUB_QUEUE_MAX = 2000
 
 
@@ -115,27 +125,52 @@ async def _ws_send_frame(hass, connection, msg):
     connection.send_result(msg["id"], {"result": result})
 
 
-async def async_setup_debug_panel(hass: HomeAssistant) -> None:
-    """Register the WS commands + custom panel once per HA instance."""
-    if hass.data.get(_REGISTERED):
-        return
-    hass.data[_REGISTERED] = True
+def _debug_panel_wanted(hass: HomeAssistant) -> bool:
+    """True if any EyBond hub entry asks for the sidebar panel."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.options.get(CONF_ENTRY_KIND) != ENTRY_KIND_EYBOND_HUB:
+            continue
+        if entry.options.get(CONF_DEBUG_PANEL, DEFAULT_DEBUG_PANEL):
+            return True
+    return False
 
+
+async def _ensure_ws_registered(hass: HomeAssistant) -> None:
+    """Register the WS commands + static JS asset once per HA instance."""
+    if hass.data.get(_WS_REGISTERED):
+        return
+    hass.data[_WS_REGISTERED] = True
     websocket_api.async_register_command(hass, _ws_state)
     websocket_api.async_register_command(hass, _ws_subscribe)
     websocket_api.async_register_command(hass, _ws_send_frame)
-
     js_path = Path(__file__).parent / "www" / "dess_debug_panel.js"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(_STATIC_URL, str(js_path), False)]
     )
-    await panel_custom.async_register_panel(
-        hass,
-        frontend_url_path=_PANEL_URL_PATH,
-        webcomponent_name="dess-debug-panel",
-        module_url=_STATIC_URL,
-        sidebar_title="DESS Debug",
-        sidebar_icon="mdi:bug-outline",
-        require_admin=True,
-    )
-    _LOGGER.info("DESS debug panel registered at /%s", _PANEL_URL_PATH)
+
+
+async def async_apply_debug_panel(hass: HomeAssistant) -> None:
+    """Show/hide the sidebar panel to match the hub option (idempotent).
+
+    Called on every entry setup, so toggling the option and reloading the
+    integration brings the sidebar in line with the new setting.
+    """
+    await _ensure_ws_registered(hass)
+    wanted = _debug_panel_wanted(hass)
+    shown = bool(hass.data.get(_PANEL_REGISTERED))
+    if wanted and not shown:
+        await panel_custom.async_register_panel(
+            hass,
+            frontend_url_path=_PANEL_URL_PATH,
+            webcomponent_name="dess-debug-panel",
+            module_url=_STATIC_URL,
+            sidebar_title="DESS Debug",
+            sidebar_icon="mdi:bug-outline",
+            require_admin=True,
+        )
+        hass.data[_PANEL_REGISTERED] = True
+        _LOGGER.info("DESS debug panel registered at /%s", _PANEL_URL_PATH)
+    elif shown and not wanted:
+        frontend.async_remove_panel(hass, _PANEL_URL_PATH)
+        hass.data[_PANEL_REGISTERED] = False
+        _LOGGER.info("DESS debug panel removed from sidebar")

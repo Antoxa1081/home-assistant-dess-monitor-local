@@ -40,8 +40,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
     await queue.start()
     hass.data["dess_monitor_local_queue"] = queue
 
-    # Register the admin-only live debug panel (once per HA instance).
-    await debug_panel.async_setup_debug_panel(hass)
+    # Show/hide the admin-only live debug panel to match the hub option
+    # (Configure -> Debug panel). Re-evaluated on every setup/reload.
+    await debug_panel.async_apply_debug_panel(hass)
 
     if _entry_kind(entry) == ENTRY_KIND_EYBOND_HUB:
         # Hub entry: one listener, many PN-routed children built from the
