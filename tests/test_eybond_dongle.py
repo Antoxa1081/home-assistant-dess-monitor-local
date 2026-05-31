@@ -8,6 +8,7 @@ routed by PN) using in-memory fake StreamReader/StreamWriter so no real
 socket is bound."""
 import asyncio
 import struct
+from unittest.mock import patch
 
 from custom_components.dess_monitor_local.api.protocols import eybond_dongle as ey
 
@@ -477,6 +478,27 @@ class TestMultiSession:
             await _drain(mgr, task)
 
         asyncio.run(scenario())
+
+        asyncio.run(scenario())
+
+    def test_forward_response_timeout_is_capped(self):
+        # A forward whose reply never arrives returns None at
+        # FORWARD_RESPONSE_TIMEOUT, NOT the (larger) per-command timeout the
+        # coordinator passes — otherwise a half-attentive dongle stalls the
+        # cycle for 30s. Patch the cap tiny and pass a big timeout: if the cap
+        # weren't applied this test would hang for 30s.
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.identified_pns == ["PN0000000001"])
+            with patch.object(ey, "FORWARD_RESPONSE_TIMEOUT", 0.05):
+                result = await mgr.send_frame(
+                    1, b"QPIGS\r", timeout=30.0, pn="PN0000000001"
+                )
+            assert result is None        # no reply within the 0.05s cap
+            await _drain(mgr, task)
 
         asyncio.run(scenario())
 

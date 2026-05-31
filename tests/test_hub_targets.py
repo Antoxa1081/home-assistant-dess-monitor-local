@@ -74,3 +74,44 @@ def test_hub_init_tolerates_bare_string_device():
     # No protocol info available from a bare string.
     assert item.protocol is None
     assert item.name == "hubname"
+
+
+def test_hub_rebuild_items_reflects_new_targets():
+    # In-place reconcile (A+2b): after the coordinator's poll set changes,
+    # Hub.rebuild_items() rebuilds the child list so the platforms recreate
+    # entities for exactly the new set.
+    coord = _Coord([
+        DeviceTarget(id="eybond:PN1:1", uri="eybond://h:8899/1?pn=PN1",
+                     protocol="voltronic", name="A"),
+    ])
+    hub = Hub(None, "hub", coord)
+    asyncio.run(hub.init())
+    assert [i.inverter_id for i in hub.items] == ["eybond:PN1:1"]
+
+    # PN1 removed, PN2 (pi18) + PN3 (modbus) added.
+    coord.devices = [
+        DeviceTarget(id="eybond:PN2:1", uri="eybond-pi18://h:8899/1?pn=PN2",
+                     protocol="pi18", name="B"),
+        DeviceTarget(id="eybond:PN3:2", uri="eybond-modbus://h:8899/2?pn=PN3",
+                     protocol="modbus", name="C"),
+    ]
+    asyncio.run(hub.rebuild_items())
+    assert [i.inverter_id for i in hub.items] == ["eybond:PN2:1", "eybond:PN3:2"]
+    assert [i.protocol for i in hub.items] == ["pi18", "modbus"]
+
+
+def test_coordinator_set_targets_swaps_poll_set():
+    # set_targets swaps both the explicit target list and the live .devices the
+    # update cycle reads — the runtime hook the in-place reconcile uses.
+    from custom_components.dess_monitor_local.coordinators.direct_coordinator import (
+        DirectCoordinator,
+    )
+    c = DirectCoordinator.__new__(DirectCoordinator)  # bypass HA base __init__
+    t1 = DeviceTarget(id="a", uri="a", protocol="voltronic", name="A")
+    t2 = DeviceTarget(id="b", uri="b", protocol="pi18", name="B")
+
+    c.set_targets([t1, t2])
+    assert c._targets == [t1, t2] and c.devices == [t1, t2]
+
+    c.set_targets([t2])  # replaces, not appends
+    assert c._targets == [t2] and c.devices == [t2]
