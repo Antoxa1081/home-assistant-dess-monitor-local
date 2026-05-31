@@ -46,7 +46,11 @@ class DirectCoordinator(DataUpdateCoordinator):
     # last-known for the cycle while the healthy ones still publish on time.
     # Single-device entries stay uncapped — a legacy cloud-proxied transport can
     # legitimately take minutes and has no sibling to starve.
-    _PER_DEVICE_POLL_TIMEOUT = 45.0
+    # With per-dongle parallelism the cycle is the SLOWEST child (not the sum),
+    # and the publish is atomic at that point, so keep the bound tight: a child
+    # stuck past this (its dongle gone for the whole poll) freezes on last-known
+    # rather than dragging every entity's update behind it.
+    _PER_DEVICE_POLL_TIMEOUT = 25.0
 
     def __init__(self, hass: HomeAssistant, config_entry, targets=None):
         """Initialize my coordinator.
@@ -135,13 +139,26 @@ class DirectCoordinator(DataUpdateCoordinator):
             ``key`` is the target's stable id (failure tracking + last-known
             lookup); ``uri`` is the transport address the command is sent to.
             """
+            # EyBond children are serialized per-dongle inside the manager
+            # (per-session send_lock), so routing them through the single
+            # global CommandQueue would serialize across dongles too — making
+            # the cycle the SUM of every child's command times and letting one
+            # cycling dongle stall the rest. Send those directly so the
+            # per-child gather actually polls the dongles in parallel. The
+            # legacy single-device path keeps the queue (one socket, rate-limit).
+            via_queue = not uri.startswith("eybond")
             for attempt in range(2):
                 try:
-                    result = await queue.enqueue(
-                        lambda d=uri, c=cmd: get_direct_data(
-                            d, c, 30, strict_crc=strict_crc
+                    if via_queue:
+                        result = await queue.enqueue(
+                            lambda d=uri, c=cmd: get_direct_data(
+                                d, c, 30, strict_crc=strict_crc
+                            )
                         )
-                    )
+                    else:
+                        result = await get_direct_data(
+                            uri, cmd, 30, strict_crc=strict_crc
+                        )
                 except Exception as err:  # transport raised unexpectedly
                     _LOGGER.debug(
                         "%s/%s attempt %d raised %r", key, cmd, attempt + 1, err
