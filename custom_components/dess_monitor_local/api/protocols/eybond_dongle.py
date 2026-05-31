@@ -39,11 +39,14 @@ import re
 import socket
 import struct
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
 from ...const import PROTOCOL_PI18
+from ...diag_hub import active as _diag
+from ...diag_hub import publish as _diag_pub
 from ..crc import build_pi30_frame
 from ..decoders.pi18 import build_request_frame
 from .eybond_discovery import EybondRegistry
@@ -624,6 +627,9 @@ class EybondManager:
         peer = writer.get_extra_info("peername")
         peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
         _LOGGER.debug("EyBond: dongle CONNECTED from %s", peer_str)
+        connected_at = time.monotonic()
+        if _diag():
+            _diag_pub({"t": "session", "ev": "connect", "peer": peer_str})
 
         # Multi-session: a new connection NEVER evicts an existing one.
         # It joins as unidentified until its heartbeat reveals a PN.
@@ -645,6 +651,12 @@ class EybondManager:
                     "EyBond RX [%s] tid=%d fc=%d devaddr=%d len=%d payload=%s",
                     peer_str, h.tid, h.fcode, h.devaddr, h.payload_len, payload.hex(),
                 )
+                if _diag():
+                    _diag_pub({
+                        "t": "frame", "dir": "rx", "pn": sess.pn or "?",
+                        "devaddr": h.devaddr, "fc": h.fcode, "tid": h.tid,
+                        "hex": payload.hex(),
+                    })
 
                 if h.fcode == FC_HEARTBEAT:
                     pn = payload[:14].decode("ascii", errors="replace").strip("\x00")
@@ -674,6 +686,11 @@ class EybondManager:
                             "(now %d session(s): %s)",
                             pn, peer_str, len(self._sessions), self.identified_pns,
                         )
+                        if _diag():
+                            _diag_pub({
+                                "t": "session", "ev": "identified",
+                                "pn": pn, "peer": peer_str,
+                            })
                     else:
                         if sess.pn:
                             # Refresh last_seen so discovery liveness stays current.
@@ -705,6 +722,12 @@ class EybondManager:
         except Exception as err:  # noqa: BLE001
             _LOGGER.exception("EyBond: session %s error: %s", peer_str, err)
         finally:
+            if _diag():
+                _diag_pub({
+                    "t": "session", "ev": "close", "pn": sess.pn or "?",
+                    "peer": peer_str,
+                    "age_s": round(time.monotonic() - connected_at, 1),
+                })
             if sess.hb_task and not sess.hb_task.done():
                 sess.hb_task.cancel()
                 try:
@@ -832,6 +855,12 @@ class EybondManager:
                     sess.peer, context or "frame", tid, devaddr,
                     v_frame.hex(), frame.hex(),
                 )
+                if _diag():
+                    _diag_pub({
+                        "t": "frame", "dir": "tx", "pn": sess.pn or "?",
+                        "devaddr": devaddr, "fc": 4, "tid": tid,
+                        "cmd": context, "hex": v_frame.hex(),
+                    })
             except (ConnectionError, OSError) as err:
                 sess.pending.pop(tid, None)
                 # Dongle closed mid-send (normal during clean-close cycling).

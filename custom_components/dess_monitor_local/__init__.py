@@ -13,7 +13,7 @@ from custom_components.dess_monitor_local.api.protocols.eybond_dongle import (
 )
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 
-from . import eybond_hub, hub
+from . import debug_panel, eybond_hub, hub
 from .const import CONF_ENTRY_KIND, ENTRY_KIND_DEVICE, ENTRY_KIND_EYBOND_HUB
 
 # List of platforms to support. There should be a matching .py file for each,
@@ -39,6 +39,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
     queue = CommandQueue(min_delay=0.3)
     await queue.start()
     hass.data["dess_monitor_local_queue"] = queue
+
+    # Register the admin-only live debug panel (once per HA instance).
+    await debug_panel.async_setup_debug_panel(hass)
 
     if _entry_kind(entry) == ENTRY_KIND_EYBOND_HUB:
         # Hub entry: one listener, many PN-routed children built from the
