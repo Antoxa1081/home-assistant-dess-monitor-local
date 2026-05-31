@@ -44,18 +44,21 @@ _SUB_QUEUE_MAX = 2000
 
 
 def _collect_state(hass: HomeAssistant) -> dict:
-    """Snapshot of every EyBond hub: discovered dongles + coordinator state."""
+    """Snapshot of every DESS entry: coordinator state for all, plus the
+    discovered-dongle registry for EyBond hubs (empty list for plain devices)."""
     hubs = []
     for entry in hass.config_entries.async_entries(DOMAIN):
-        if entry.options.get(CONF_ENTRY_KIND) != ENTRY_KIND_EYBOND_HUB:
-            continue
-        runtime = eybond_hub.get_hub_runtime(hass, entry.entry_id)
+        is_hub = entry.options.get(CONF_ENTRY_KIND) == ENTRY_KIND_EYBOND_HUB
+        runtime = (
+            eybond_hub.get_hub_runtime(hass, entry.entry_id) if is_hub else None
+        )
         dongles = (
             [r.to_dict() for r in runtime.registry.all()] if runtime else []
         )
         hubs.append({
             "entry_id": entry.entry_id,
             "title": entry.title,
+            "kind": "hub" if is_hub else "device",
             "dongles": dongles,
             "coordinator": _coordinator_section(entry),
         })
@@ -126,10 +129,8 @@ async def _ws_send_frame(hass, connection, msg):
 
 
 def _debug_panel_wanted(hass: HomeAssistant) -> bool:
-    """True if any EyBond hub entry asks for the sidebar panel."""
+    """True if any DESS entry (hub or plain device) asks for the sidebar panel."""
     for entry in hass.config_entries.async_entries(DOMAIN):
-        if entry.options.get(CONF_ENTRY_KIND) != ENTRY_KIND_EYBOND_HUB:
-            continue
         if entry.options.get(CONF_DEBUG_PANEL, DEFAULT_DEBUG_PANEL):
             return True
     return False

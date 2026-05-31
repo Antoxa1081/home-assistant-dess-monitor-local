@@ -161,7 +161,8 @@
           "eybond_broadcast": "Broadcast address",
           "eybond_announce_ip": "Announce IP",
           "update_interval": "Update interval (seconds)",
-          "strict_crc": "Strict CRC validation"
+          "strict_crc": "Strict CRC validation",
+          "debug_panel": "Show debug panel in sidebar"
         },
         "data_description": {
           "host": "Hostname or IP address of the inverter, gateway, agent, or local bind interface for EyBond.",

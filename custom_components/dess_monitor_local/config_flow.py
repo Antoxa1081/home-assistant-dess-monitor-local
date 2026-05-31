@@ -827,11 +827,24 @@ class OptionsFlow(config_entries.OptionsFlow):
                         CONF_EYBOND_ANNOUNCE_IP: eybond_announce_ip,
                         CONF_UPDATE_INTERVAL: update_interval,
                         CONF_STRICT_CRC: strict_crc,
+                        CONF_DEBUG_PANEL: bool(
+                            user_input.get(CONF_DEBUG_PANEL, DEFAULT_DEBUG_PANEL)
+                        ),
                     },
                 )
 
         defaults = {**self._defaults, **(user_input or {})}
         schema = await _build_connection_schema(protocol, transport, defaults)
+        # Append the admin-only debug-panel toggle (panel is one per HA, but any
+        # entry may flip it — see async_apply_debug_panel). Applied on reload.
+        schema = schema.extend({
+            vol.Optional(
+                CONF_DEBUG_PANEL,
+                default=self._config_entry.options.get(
+                    CONF_DEBUG_PANEL, DEFAULT_DEBUG_PANEL
+                ),
+            ): BooleanSelector(),
+        })
         return self.async_show_form(
             step_id="connection",
             data_schema=schema,

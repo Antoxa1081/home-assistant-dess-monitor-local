@@ -180,7 +180,8 @@
           "eybond_broadcast": "Broadcast адрес",
           "eybond_announce_ip": "Announce IP",
           "update_interval": "Интервал обновления (секунды)",
-          "strict_crc": "Строгая проверка CRC"
+          "strict_crc": "Строгая проверка CRC",
+          "debug_panel": "Показывать дебаг-панель в боковом меню"
         },
         "data_description": {
           "host": "IP или hostname инвертора, шлюза, агента или локальный bind-интерфейс для EyBond.",

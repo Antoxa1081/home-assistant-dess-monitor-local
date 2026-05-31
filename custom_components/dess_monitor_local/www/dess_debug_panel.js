@@ -171,7 +171,7 @@ class DessDebugPanel extends HTMLElement {
             <button id="clear">Clear</button>
           </span>
         </div>
-        <table><thead><tr>
+        <table id="dongletbl"><thead><tr>
           <th>PN</th><th>Name</th><th>Status</th><th>Proto</th><th>Addr</th><th>Peer</th><th>Last seen</th><th>Latency</th><th>On</th>
         </tr></thead><tbody id="dongles"></tbody></table>
         <div class="grid">
@@ -208,12 +208,19 @@ class DessDebugPanel extends HTMLElement {
   _renderHeader() {
     const el = this.shadowRoot.getElementById("hdrstats");
     if (!el) return;
-    const hub = (this._state.hubs || [])[0];
-    const dongles = hub ? hub.dongles.length : 0;
-    const conn = hub ? hub.dongles.filter((d) => d.status === "connected").length : 0;
+    const entries = this._state.hubs || [];
+    let dongles = 0, conn = 0, devices = 0;
+    for (const e of entries) {
+      dongles += (e.dongles || []).length;
+      conn += (e.dongles || []).filter((d) => d.status === "connected").length;
+      devices += ((e.coordinator && e.coordinator.devices) || []).length;
+    }
     const lastCyc = this._cycles[this._cycles.length - 1];
-    el.textContent = `${this._state.hubs.length} hub · ${conn}/${dongles} connected`
-      + (lastCyc ? ` · last cycle ${lastCyc.dur_s}s` : "");
+    const parts = [`${entries.length} ${entries.length === 1 ? "entry" : "entries"}`];
+    if (dongles) parts.push(`${conn}/${dongles} dongles`);
+    if (devices) parts.push(`${devices} dev`);
+    if (lastCyc) parts.push(`last cycle ${lastCyc.dur_s}s`);
+    el.textContent = parts.join(" · ");
   }
 
   _ago(iso) {
@@ -225,6 +232,12 @@ class DessDebugPanel extends HTMLElement {
   _renderDongles() {
     const tb = this.shadowRoot.getElementById("dongles");
     if (!tb) return;
+    // Plain-device setups have no dongle registry — hide the whole table
+    // rather than show an empty "no dongles" row.
+    const total = (this._state.hubs || []).reduce((n, h) => n + (h.dongles || []).length, 0);
+    const tbl = this.shadowRoot.getElementById("dongletbl");
+    if (tbl) tbl.style.display = total ? "" : "none";
+    if (!total) { tb.innerHTML = ""; return; }
     const rows = [];
     for (const hub of this._state.hubs || []) {
       for (const d of hub.dongles) {
