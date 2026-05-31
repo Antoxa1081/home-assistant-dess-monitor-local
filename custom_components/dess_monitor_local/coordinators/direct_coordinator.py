@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 
 import async_timeout
@@ -8,6 +9,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
+from custom_components.dess_monitor_local import diag_hub
 from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
@@ -309,9 +311,23 @@ class DirectCoordinator(DataUpdateCoordinator):
                         )
                         return key, dict(prev_data.get(key) or {})
 
+                _t0 = time.monotonic()
                 data_map = dict(
                     await asyncio.gather(*map(fetch_device_guarded, self.devices))
                 )
+                if diag_hub.active():
+                    counts = getattr(self._failures, "_counts", {}) or {}
+                    children = {}
+                    for t in self.devices:
+                        k = getattr(t, "id", t)
+                        n = sum(v for (kk, _c), v in counts.items() if kk == k)
+                        children[k] = "ok" if n == 0 else f"fail:{n}"
+                    diag_hub.publish({
+                        "t": "cycle",
+                        "dur_s": round(time.monotonic() - _t0, 2),
+                        "n": cycle,
+                        "children": children,
+                    })
                 self._cycle += 1  # advance the split-cadence schedule
                 return data_map
         except TimeoutError as err:
