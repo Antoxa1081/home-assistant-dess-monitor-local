@@ -779,9 +779,19 @@ class EybondManager:
                         sess.peer, tid, int(HEARTBEAT_INTERVAL), frame.hex(),
                     )
                 except (ConnectionError, OSError) as err:
+                    # A failed heartbeat write means the TCP connection is dead.
+                    # Close the writer so the session's read loop unblocks and
+                    # drops the session NOW — otherwise a half-open connection
+                    # lingers and its polls waste the full 30s response timeout
+                    # before failing (S3).
                     _LOGGER.warning(
-                        "EyBond: heartbeat write to %s failed: %s", sess.peer, err
+                        "EyBond: heartbeat write to %s failed: %s — "
+                        "closing dead session", sess.peer, err,
                     )
+                    try:
+                        sess.writer.close()
+                    except Exception:
+                        pass
                     return
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
         except asyncio.CancelledError:

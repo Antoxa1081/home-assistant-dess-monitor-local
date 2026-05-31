@@ -135,10 +135,11 @@ class _FakeWriter:
     """Captures each ``write()`` as a discrete frame (EyBond writes whole
     frames in one call) and records close()."""
 
-    def __init__(self, peer=("10.0.0.9", 9999)):
+    def __init__(self, peer=("10.0.0.9", 9999), fail_drain=False):
         self.frames: list[bytes] = []
         self.closed = False
         self._peer = peer
+        self.fail_drain = fail_drain
 
     def get_extra_info(self, key):
         return self._peer if key == "peername" else None
@@ -147,7 +148,8 @@ class _FakeWriter:
         self.frames.append(bytes(data))
 
     async def drain(self) -> None:
-        pass
+        if self.fail_drain:
+            raise ConnectionResetError("broken pipe")
 
     def close(self) -> None:
         self.closed = True
@@ -502,6 +504,22 @@ class TestMultiSession:
             assert mgr._announce_interval() == ey.STEADY_ANNOUNCE_INTERVAL
             mgr.force_rediscovery(60.0)
             assert mgr._announce_interval() == ey.ANNOUNCE_INTERVAL
+            await _drain(mgr)
+
+        asyncio.run(scenario())
+
+    def test_dead_session_closed_on_heartbeat_write_failure(self):
+        # S3: a failed heartbeat write means the connection is dead — the loop
+        # closes the writer so the read side unblocks and the session drops
+        # fast (instead of lingering and wasting 30s response timeouts).
+        async def scenario():
+            mgr = _new_manager()
+            r = _FakeReader()
+            w = _FakeWriter(("10.0.0.1", 1111), fail_drain=True)
+            sess = ey._Session(reader=r, writer=w, peer="10.0.0.1:1111")
+            # The loop sends one heartbeat; drain() raises → it closes & returns.
+            await mgr._heartbeat_loop(sess)
+            assert w.closed is True
             await _drain(mgr)
 
         asyncio.run(scenario())
