@@ -575,7 +575,7 @@ class EybondManager:
             while True:
                 if self._should_announce():
                     if was_paused:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "EyBond: announce RESUMED — expected dongle missing"
                         )
                     was_paused = False
@@ -596,7 +596,7 @@ class EybondManager:
                 elif not was_paused:
                     # Don't keep knocking connected dongles offline.
                     was_paused = True
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "EyBond: announce PAUSED — expected dongle(s) connected "
                         "(%s); will resume if one drops",
                         self.identified_pns,
@@ -623,7 +623,7 @@ class EybondManager:
     ) -> None:
         peer = writer.get_extra_info("peername")
         peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
-        _LOGGER.info("EyBond: dongle CONNECTED from %s", peer_str)
+        _LOGGER.debug("EyBond: dongle CONNECTED from %s", peer_str)
 
         # Multi-session: a new connection NEVER evicts an existing one.
         # It joins as unidentified until its heartbeat reveals a PN.
@@ -654,7 +654,7 @@ class EybondManager:
                         # session bound to this PN before claiming it.
                         old = self._sessions_by_pn.get(pn)
                         if old is not None and old is not sess:
-                            _LOGGER.warning(
+                            _LOGGER.debug(
                                 "EyBond: PN=%s reconnected from %s, replacing "
                                 "stale session %s",
                                 pn, peer_str, old.peer,
@@ -669,7 +669,7 @@ class EybondManager:
                         self._sessions_by_pn[pn] = sess
                         self._ready_event_for(pn).set()
                         self.registry.record_seen(pn, peer_str)
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "EyBond: dongle identified, PN=%s peer=%s "
                             "(now %d session(s): %s)",
                             pn, peer_str, len(self._sessions), self.identified_pns,
@@ -686,7 +686,7 @@ class EybondManager:
                     if fut and not fut.done():
                         fut.set_result(payload)
                     else:
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "EyBond: unsolicited FC=4 tid=%d devaddr=%d (%d bytes) "
                             "payload=%s",
                             h.tid, h.devaddr, len(payload), payload.hex(),
@@ -698,7 +698,7 @@ class EybondManager:
                     )
 
         except asyncio.IncompleteReadError:
-            _LOGGER.info("EyBond: dongle %s DISCONNECTED (clean close)", peer_str)
+            _LOGGER.debug("EyBond: dongle %s DISCONNECTED (clean close)", peer_str)
         except asyncio.CancelledError:
             _LOGGER.info("EyBond: session %s cancelled", peer_str)
             raise
@@ -782,7 +782,7 @@ class EybondManager:
             ev = self._any_ready
 
         wait = min(timeout, SESSION_WAIT_TIMEOUT)
-        _LOGGER.info(
+        _LOGGER.debug(
             "EyBond: no dongle connected yet, waiting up to %.1fs for %s "
             "(pn=%s devaddr=%d) — UDP announcer is broadcasting",
             wait, context or "frame", pn or "<any>", devaddr,
@@ -790,7 +790,9 @@ class EybondManager:
         try:
             await asyncio.wait_for(ev.wait(), timeout=wait)
         except TimeoutError:
-            _LOGGER.warning(
+            # Expected during the brief clean-close gaps these dongles cycle
+            # through (they reconnect within ~1s); DEBUG, not WARNING.
+            _LOGGER.debug(
                 "EyBond: no dongle (pn=%s) within %.1fs, dropping %s devaddr=%d",
                 pn or "<any>", wait, context or "frame", devaddr,
             )
@@ -832,7 +834,8 @@ class EybondManager:
                 )
             except (ConnectionError, OSError) as err:
                 sess.pending.pop(tid, None)
-                _LOGGER.warning(
+                # Dongle closed mid-send (normal during clean-close cycling).
+                _LOGGER.debug(
                     "EyBond: write %s devaddr=%d to %s failed: %s",
                     context or "frame", devaddr, sess.peer, err,
                 )
@@ -845,13 +848,15 @@ class EybondManager:
                 raw = await asyncio.wait_for(fut, timeout=resp_timeout)
             except TimeoutError:
                 sess.pending.pop(tid, None)
-                _LOGGER.warning(
+                # No reply within the cap — usual when the dongle clean-closed
+                # mid-poll; it reconnects and the next cycle succeeds.
+                _LOGGER.debug(
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",
                     context or "frame", devaddr, tid, resp_timeout,
                 )
                 return None
             except ConnectionError as err:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "EyBond: %s devaddr=%d aborted (session lost): %s",
                     context or "frame", devaddr, err,
                 )
