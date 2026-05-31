@@ -352,23 +352,28 @@ class EybondManager:
             self._ready_by_pn[pn] = ev
         return ev
 
-    def _any_session(self) -> _Session | None:
-        """Deterministically pick one session for a legacy PN-less request."""
-        if not self._sessions:
-            return None
-        if len(self._sessions) > 1:
-            _LOGGER.warning(
-                "EyBond: PN-less request with %d sessions connected on %s:%d; "
-                "routing to first identified — specify a PN to target a "
-                "specific dongle",
-                len(self._sessions), self.bind_host, self.bind_port,
+    def _pnless_target(self, context: str = "") -> _Session | None:
+        """Resolve a PN-less request to the single connected session.
+
+        Returns that session only when exactly one dongle is connected
+        (the legacy single-dongle path). When MORE than one dongle is
+        connected the request is ambiguous — we can't know which inverter
+        it means — so it's dropped with an actionable error instead of
+        silently routing to the first dongle (which would feed one entry
+        another inverter's data). The fix for the user is to configure each
+        device via the EyBond hub so every child carries its dongle PN.
+        """
+        n = len(self._sessions)
+        if n == 1:
+            return next(iter(self._sessions))
+        if n > 1:
+            _LOGGER.error(
+                "EyBond: PN-less request on %s:%d with %d dongles connected — "
+                "cannot target one, dropping %s. Configure this device via "
+                "the EyBond hub so each child carries its dongle PN.",
+                self.bind_host, self.bind_port, n, context or "frame",
             )
-        identified = sorted(
-            (s for s in self._sessions if s.pn), key=lambda s: s.pn
-        )
-        if identified:
-            return identified[0]
-        return next(iter(self._sessions))
+        return None
 
     def _drop_session(self, sess: _Session, reason: str) -> None:
         """Idempotently remove a session from all maps and fail its pending."""
@@ -751,9 +756,11 @@ class EybondManager:
                 return sess
             ev = self._ready_event_for(pn)
         else:
-            sess = self._any_session()
-            if sess is not None:
-                return sess
+            # Legacy PN-less path. With one or more dongles already connected,
+            # resolve now (drops if ambiguous — waiting wouldn't disambiguate).
+            # Only wait when nothing is connected yet.
+            if self._sessions:
+                return self._pnless_target(context)
             ev = self._any_ready
 
         wait = min(timeout, SESSION_WAIT_TIMEOUT)
@@ -770,7 +777,7 @@ class EybondManager:
                 pn or "<any>", wait, context or "frame", devaddr,
             )
             return None
-        return self._sessions_by_pn.get(pn) if pn else self._any_session()
+        return self._sessions_by_pn.get(pn) if pn else self._pnless_target(context)
 
     async def send_frame(
         self,

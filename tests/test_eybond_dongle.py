@@ -300,6 +300,45 @@ class TestMultiSession:
 
         asyncio.run(scenario())
 
+    def test_pnless_single_dongle_resolves(self):
+        # Legacy single-dongle path: a PN-less request routes to the only
+        # connected session.
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            t = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: len(mgr._sessions) == 1)
+            sess = await mgr._wait_for_session(None, 5.0, "QPIGS", 1)
+            assert sess is not None and sess.pn == "PN0000000001"
+            await _drain(mgr, t)
+
+        asyncio.run(scenario())
+
+    def test_pnless_ambiguous_is_dropped(self):
+        # S2 guard: PN-less request with >1 dongle connected can't be
+        # disambiguated — dropped (None), and no frame leaks to either dongle.
+        async def scenario():
+            mgr = _new_manager()
+            rA, wA = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            rB, wB = _FakeReader(), _FakeWriter(("10.0.0.2", 2222))
+            tA = asyncio.create_task(mgr._handle_session(rA, wA))
+            tB = asyncio.create_task(mgr._handle_session(rB, wB))
+            rA.feed(_dongle_heartbeat("PN_AAAAAAA01"))
+            rB.feed(_dongle_heartbeat("PN_BBBBBBB02"))
+            await _until(lambda: len(mgr._sessions) == 2)
+
+            wA.frames.clear()
+            wB.frames.clear()
+            # PN-less send must drop, not route to "first identified".
+            result = await mgr.send_frame(1, b"QPIGS\r", timeout=5.0, pn=None)
+            assert result is None
+            assert _find_fc4(wA.frames)[1] is None
+            assert _find_fc4(wB.frames)[1] is None
+            await _drain(mgr, tA, tB)
+
+        asyncio.run(scenario())
+
     def test_disconnect_isolation(self):
         async def scenario():
             mgr = _new_manager()
