@@ -49,7 +49,11 @@ def _collect_state(hass: HomeAssistant) -> dict:
             "dongles": dongles,
             "coordinator": _coordinator_section(entry),
         })
-    return {"hubs": hubs, "events": diag_hub.recent(limit=300)}
+    # NOTE: events are NOT included here. The panel polls state every ~2s and
+    # resending the (hex-heavy) recent ring on every poll made each refresh grow
+    # heavier as the ring filled — the panel felt slower the longer it ran. The
+    # event backlog is delivered once via the subscribe replay below instead.
+    return {"hubs": hubs}
 
 
 @websocket_api.websocket_command(
@@ -89,7 +93,7 @@ async def _ws_subscribe(hass, connection, msg):
     connection.subscriptions[msg["id"]] = _unsubscribe
     connection.send_result(msg["id"])
     # Replay the recent ring so a freshly-opened panel isn't blank.
-    for event in diag_hub.recent(limit=300):
+    for event in diag_hub.recent(limit=150):
         connection.send_message(websocket_api.event_message(msg["id"], event))
 
 

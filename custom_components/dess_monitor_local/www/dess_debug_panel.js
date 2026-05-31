@@ -10,6 +10,7 @@
 const MAX_EVENTS = 800;
 const MAX_CYCLES = 60;
 const LAT_WINDOW = 30; // rolling latency samples per dongle
+const MAX_PENDING = 256; // cap unmatched TX (cycling dongles drop mid-poll → never get an RX)
 
 function hexToAscii(hex) {
   if (!hex) return "";
@@ -33,6 +34,7 @@ class DessDebugPanel extends HTMLElement {
     this._filter = "";
     this._paused = false;
     this._pollTimer = null;
+    this._renderScheduled = false;
     this._pending = new Map(); // `${pn}:${tid}` -> tx ts (latency matching)
     this._lat = new Map(); // pn -> [ms,...] rolling
     this.attachShadow({ mode: "open" });
@@ -82,8 +84,13 @@ class DessDebugPanel extends HTMLElement {
   _ingest(ev) {
     if (ev.t === "frame") {
       const k = `${ev.pn}:${ev.tid}`;
-      if (ev.dir === "tx") this._pending.set(k, ev.ts);
-      else if (ev.dir === "rx" && ev.fc === 4 && this._pending.has(k)) {
+      if (ev.dir === "tx") {
+        this._pending.set(k, ev.ts);
+        // Evict the oldest unmatched TX so a dongle that keeps dropping mid-poll
+        // (no RX ever arrives) can't grow this Map without bound over hours.
+        if (this._pending.size > MAX_PENDING)
+          this._pending.delete(this._pending.keys().next().value);
+      } else if (ev.dir === "rx" && ev.fc === 4 && this._pending.has(k)) {
         const ms = Math.round((ev.ts - this._pending.get(k)) * 1000);
         this._pending.delete(k);
         ev._lat = ms;
@@ -103,8 +110,20 @@ class DessDebugPanel extends HTMLElement {
   _onEvent(ev) {
     if (this._paused) return;
     this._ingest(ev);
-    this._renderEvents();
+    this._scheduleRender();
     if (ev.t === "cycle") this._renderCycles();
+  }
+
+  // Coalesce bursts of frames into one render per animation frame. Without this
+  // each event triggered a full innerHTML rebuild of up to MAX_EVENTS rows, so a
+  // fast frame stream pegged the tab and the panel grew sluggish the longer it ran.
+  _scheduleRender() {
+    if (this._renderScheduled) return;
+    this._renderScheduled = true;
+    requestAnimationFrame(() => {
+      this._renderScheduled = false;
+      this._renderEvents();
+    });
   }
 
   _avgLat(pn) {
