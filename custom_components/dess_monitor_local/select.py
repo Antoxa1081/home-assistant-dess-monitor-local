@@ -135,15 +135,17 @@ class SelectBase(CoordinatorEntity, SelectEntity):
 
 
 def resolve_output_priority(device_data):
-    return device_data.get('qpiri').get('output_source_priority')
+    # ``(... or {})`` so an offline child (no qpiri section yet) doesn't crash
+    # select setup / reconcile with 'NoneType' has no attribute 'get'.
+    return (device_data.get('qpiri') or {}).get('output_source_priority')
 
 
 def resolve_chrage_source_priority(device_data):
-    return device_data.get('qpiri').get('charger_source_priority')
+    return (device_data.get('qpiri') or {}).get('charger_source_priority')
 
 
 def resolve_max_utility_charging_current(device_data):
-    return device_data.get('qpiri').get('max_utility_charging_current')
+    return (device_data.get('qpiri') or {}).get('max_utility_charging_current')
 
 
 class InverterOutputPrioritySelect(SelectBase):

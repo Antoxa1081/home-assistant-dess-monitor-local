@@ -969,8 +969,10 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
         summary: list[str] = []
         for rec in records:
             p = rec.pn
+            # Default Enable to ON so configuring a dongle polls it in one step
+            # (untick to keep a discovered dongle tracked but not polled).
             schema_dict[
-                vol.Optional(f"{p}__enabled", default=rec.enabled)
+                vol.Optional(f"{p}__enabled", default=True)
             ] = BooleanSelector()
             schema_dict[
                 vol.Optional(f"{p}__name", default=rec.name or rec.pn)

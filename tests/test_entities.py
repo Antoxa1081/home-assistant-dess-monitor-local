@@ -232,3 +232,21 @@ class TestTimeToFull:
 def ds_energy_time_to_full(soc_sensor, qpigs):
     ent = des.DirectBatteryTimeToFullSensor(_Dev(), _Coord({"qpigs": qpigs}), soc_sensor)
     return _neutralise_write(ent)
+
+
+class TestOfflineChildCrashSafety:
+    """Offline hub children have no qpigs/qpiri yet — entity setup and the
+    coordinator update fan-out must not crash, otherwise the in-place child
+    reconcile aborts and forces a full reload (bouncing the listener)."""
+
+    def test_device_status_survives_missing_qpigs(self):
+        ent = _make(ds.DirectDeviceStatusSensor, {})  # device data has no qpigs
+        ent._handle_coordinator_update()              # must not raise
+        assert ent._attr_native_value == "OK"
+        assert ent.extra_state_attributes is not None
+
+    def test_select_resolvers_safe_without_qpiri(self):
+        from custom_components.dess_monitor_local import select as sel
+        assert sel.resolve_output_priority({}) is None
+        assert sel.resolve_chrage_source_priority({}) is None
+        assert sel.resolve_max_utility_charging_current({}) is None
