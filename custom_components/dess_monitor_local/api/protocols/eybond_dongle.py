@@ -437,11 +437,8 @@ class EybondManager:
                     "EyBond: TCP listener READY, bound sockets=[%s] (broadcast target %s)",
                     sock_addrs, self.broadcast,
                 )
-            else:
-                _LOGGER.debug(
-                    "EyBond: TCP listener already running on %s:%d",
-                    self.bind_host, self.bind_port,
-                )
+            # (no log on the already-running path — ensure_started() runs on
+            # every send, so it would spam DEBUG once per poll.)
             # The announcer task stays alive, but only actually broadcasts
             # while an expected dongle is missing (see _should_announce) —
             # broadcasting at a connected dongle makes it reconnect.
