@@ -124,6 +124,20 @@ class DirectCoordinator(DataUpdateCoordinator):
         self._targets = list(targets)
         self.devices = list(targets)
 
+    def _child_failure_summary(self) -> dict:
+        """Per-child ``"ok"`` / ``"fail:N"`` for the debug panel's cycle event.
+
+        ``FailureTracker._counts`` is ``{device: {command: consecutive_fails}}``;
+        sum a child's command failures.
+        """
+        counts = getattr(self._failures, "_counts", {}) or {}
+        out: dict = {}
+        for target in self.devices:
+            key = getattr(target, "id", target)
+            n = sum((counts.get(key) or {}).values())
+            out[key] = "ok" if n == 0 else f"fail:{n}"
+        return out
+
     async def get_active_devices(self):
         # Explicit targets (EyBond hub children) take precedence.
         if self._targets is not None:
@@ -316,17 +330,11 @@ class DirectCoordinator(DataUpdateCoordinator):
                     await asyncio.gather(*map(fetch_device_guarded, self.devices))
                 )
                 if diag_hub.active():
-                    counts = getattr(self._failures, "_counts", {}) or {}
-                    children = {}
-                    for t in self.devices:
-                        k = getattr(t, "id", t)
-                        n = sum(v for (kk, _c), v in counts.items() if kk == k)
-                        children[k] = "ok" if n == 0 else f"fail:{n}"
                     diag_hub.publish({
                         "t": "cycle",
                         "dur_s": round(time.monotonic() - _t0, 2),
                         "n": cycle,
-                        "children": children,
+                        "children": self._child_failure_summary(),
                     })
                 self._cycle += 1  # advance the split-cadence schedule
                 return data_map

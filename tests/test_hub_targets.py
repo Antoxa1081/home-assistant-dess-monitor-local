@@ -131,3 +131,28 @@ def test_coordinator_poll_schedule_invariants():
     assert len(sections) == len(set(sections))
     # Tolerate more transient misses before unavailable (cycling dongles).
     assert DirectCoordinator._MAX_CONSECUTIVE_FAILURES >= 5
+
+
+def test_child_failure_summary_reads_nested_counts():
+    # Guards the debug-panel cycle event against the _counts shape:
+    # FailureTracker._counts is {device: {command: fails}} (nested), NOT
+    # {(device, command): fails}.
+    from custom_components.dess_monitor_local.coordinators.direct_coordinator import (
+        DirectCoordinator,
+    )
+    from custom_components.dess_monitor_local.coordinators.failure_tracker import (
+        FailureTracker,
+    )
+    c = DirectCoordinator.__new__(DirectCoordinator)
+    c._failures = FailureTracker(6)
+    c.devices = [
+        DeviceTarget(id="eybond:PNA:1", uri="u", protocol="voltronic", name="A"),
+        DeviceTarget(id="eybond:PNB:1", uri="u", protocol="voltronic", name="B"),
+    ]
+    c._failures.on_failure("eybond:PNA:1", "QPIGS")
+    c._failures.on_failure("eybond:PNA:1", "QPIGS")
+    c._failures.on_success("eybond:PNB:1", "QPIGS")
+
+    summary = c._child_failure_summary()
+    assert summary["eybond:PNA:1"] == "fail:2"
+    assert summary["eybond:PNB:1"] == "ok"
