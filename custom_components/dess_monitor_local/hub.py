@@ -22,6 +22,15 @@ class Hub:
     def hub_id(self) -> str:
         return self._id
 
+    async def rebuild_items(self) -> None:
+        """Rebuild ``items`` from the coordinator's current targets.
+
+        Used by the EyBond hub's in-place child reconcile after the poll
+        targets change, so the platforms recreate entities for the new set.
+        """
+        self.items = []
+        await self.init()
+
     async def init(self):
         targets = self.direct_coordinator.devices
         for target in targets:

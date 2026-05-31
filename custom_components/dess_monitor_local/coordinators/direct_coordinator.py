@@ -80,6 +80,16 @@ class DirectCoordinator(DataUpdateCoordinator):
         """
         self.devices = await self.get_active_devices()
 
+    def set_targets(self, targets) -> None:
+        """Swap the explicit poll-target list at runtime.
+
+        Used by the EyBond hub's in-place child reconcile (no entry reload):
+        the next poll cycle reads ``self.devices``, and ``_async_update_data``
+        snapshots it per cycle, so replacing the list between cycles is safe.
+        """
+        self._targets = list(targets)
+        self.devices = list(targets)
+
     async def get_active_devices(self):
         # Explicit targets (EyBond hub children) take precedence.
         if self._targets is not None:

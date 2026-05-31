@@ -919,7 +919,28 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(step_id="rescan", data_schema=vol.Schema({}))
 
+    @staticmethod
+    def _apply_device_bulk(registry, records, user_input) -> None:
+        """Apply one bulk-form submission to the registry (per-PN fields)."""
+        for rec in records:
+            p = rec.pn
+            if user_input.get(f"{p}__remove"):
+                # Drop a stale/gone dongle. If still physically present it is
+                # re-discovered as a fresh unconfigured record on next heartbeat.
+                registry.remove(p)
+                continue
+            registry.set_name(p, (user_input.get(f"{p}__name") or "").strip())
+            registry.set_devaddr(p, int(user_input.get(f"{p}__devaddr", rec.devaddr)))
+            proto = user_input.get(f"{p}__protocol", _HUB_CHILD_PROTOCOL_NONE)
+            registry.set_protocol(
+                p, None if proto == _HUB_CHILD_PROTOCOL_NONE else proto
+            )
+            registry.set_enabled(p, bool(user_input.get(f"{p}__enabled", False)))
+
     async def async_step_devices(self, user_input=None):
+        """Configure ALL discovered dongles in one form (one submit), then
+        reconcile the running hub in place — no entry reload, so the listener
+        and the connected dongles are never bounced."""
         runtime = self._runtime()
         registry = runtime.registry if runtime is not None else None
         records = registry.all() if registry is not None else []
@@ -927,94 +948,59 @@ class EybondHubOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="no_devices")
 
         if user_input is not None:
-            self._selected_pn = user_input["pn"]
-            return await self.async_step_device_edit()
-
-        options = []
-        for rec in records:
-            label = f"{rec.pn} · {rec.status}"
-            if rec.enabled and rec.protocol:
-                label += f" · {rec.protocol}"
-            elif rec.enabled:
-                label += " · enabled (no protocol)"
-            options.append(SelectOptionDict(value=rec.pn, label=label))
-        schema = vol.Schema(
-            {
-                vol.Required("pn"): SelectSelector(
-                    SelectSelectorConfig(
-                        options=options, mode=SelectSelectorMode.LIST
-                    )
-                )
-            }
-        )
-        return self.async_show_form(step_id="devices", data_schema=schema)
-
-    async def async_step_device_edit(self, user_input=None):
-        runtime = self._runtime()
-        registry = runtime.registry if runtime is not None else None
-        pn = self._selected_pn
-        rec = registry.get(pn) if registry is not None and pn else None
-        if rec is None:
-            return self.async_abort(reason="no_devices")
-
-        if user_input is not None:
-            if user_input.get("remove"):
-                # Drop a stale/gone dongle from the registry. If it's still
-                # physically present it will simply be re-discovered (as a
-                # fresh unconfigured record) on its next heartbeat.
-                registry.remove(pn)
-            else:
-                enabled = bool(user_input.get("enabled", False))
-                name = (user_input.get(CONF_NAME) or "").strip()
-                protocol = user_input.get(CONF_PROTOCOL, _HUB_CHILD_PROTOCOL_NONE)
-                devaddr = int(user_input.get(CONF_EYBOND_DEVADDR, rec.devaddr))
-                registry.set_name(pn, name)
-                registry.set_devaddr(pn, devaddr)
-                registry.set_protocol(
-                    pn,
-                    None if protocol == _HUB_CHILD_PROTOCOL_NONE else protocol,
-                )
-                registry.set_enabled(pn, enabled)
-            # Persist before the reload so setup re-reads the new config.
+            self._apply_device_bulk(registry, records, user_input)
             if runtime is not None:
                 await runtime.async_save(force=True)
-            return self.async_create_entry(title="", data=self._bumped_options())
+            # In-place reconcile (no reload). Options are left unchanged, so
+            # finishing the flow doesn't trip the reload update-listener.
+            from . import eybond_hub
+
+            self.hass.async_create_task(
+                eybond_hub.async_reconcile_children(self.hass, self._config_entry)
+            )
+            return self.async_create_entry(
+                title="", data=dict(self._config_entry.options)
+            )
 
         proto_options = [
             SelectOptionDict(value=p, label=p) for p in _HUB_CHILD_PROTOCOLS
         ]
-        schema = vol.Schema(
-            {
-                vol.Optional("enabled", default=rec.enabled): BooleanSelector(),
-                vol.Optional(CONF_NAME, default=rec.name or rec.pn): cv.string,
-                vol.Required(
-                    CONF_PROTOCOL,
+        schema_dict: dict = {}
+        summary: list[str] = []
+        for rec in records:
+            p = rec.pn
+            schema_dict[
+                vol.Optional(f"{p}__enabled", default=rec.enabled)
+            ] = BooleanSelector()
+            schema_dict[
+                vol.Optional(f"{p}__name", default=rec.name or rec.pn)
+            ] = cv.string
+            schema_dict[
+                vol.Optional(
+                    f"{p}__protocol",
                     default=rec.protocol or _HUB_CHILD_PROTOCOL_NONE,
-                ): SelectSelector(
-                    SelectSelectorConfig(
-                        options=proto_options, mode=SelectSelectorMode.LIST
-                    )
-                ),
-                vol.Required(
-                    CONF_EYBOND_DEVADDR, default=rec.devaddr
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=1, max=16, step=1, mode=NumberSelectorMode.BOX
-                    )
-                ),
-                # Remove a stale/gone dongle from discovery. Other fields are
-                # ignored when this is set.
-                vol.Optional("remove", default=False): BooleanSelector(),
-            }
-        )
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=proto_options, mode=SelectSelectorMode.LIST
+                )
+            )
+            schema_dict[
+                vol.Optional(f"{p}__devaddr", default=rec.devaddr)
+            ] = NumberSelector(
+                NumberSelectorConfig(
+                    min=1, max=16, step=1, mode=NumberSelectorMode.BOX
+                )
+            )
+            schema_dict[
+                vol.Optional(f"{p}__remove", default=False)
+            ] = BooleanSelector()
+            summary.append(f"{p} · {rec.status} · last seen {rec.last_seen or 'never'}")
+
         return self.async_show_form(
-            step_id="device_edit",
-            data_schema=schema,
-            description_placeholders={
-                "pn": pn,
-                "status": rec.status,
-                "last_seen": rec.last_seen or "never",
-            },
+            step_id="devices",
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={"devices": "\n".join(summary)},
         )
 
     async def async_step_listener(self, user_input=None):
