@@ -121,7 +121,12 @@ class SelectBase(CoordinatorEntity, SelectEntity):
 
     @property
     def data(self):
-        return self.coordinator.data[self._inverter_device.inverter_id]
+        # Safe: a freshly-added hub child isn't in coordinator.data until its
+        # first poll. Returning {} avoids a KeyError that would crash select
+        # setup / the in-place reconcile.
+        return (self.coordinator.data or {}).get(
+            self._inverter_device.inverter_id
+        ) or {}
 
     # async def async_added_to_hass(self):
     #     """Run when this Entity has been added to HA."""
@@ -158,7 +163,7 @@ class InverterOutputPrioritySelect(SelectBase):
         self._attr_options = ['UtilityFirst', 'SBU', 'Solar']
 
         if coordinator.data is not None:
-            data = coordinator.data[self._inverter_device.inverter_id]
+            data = coordinator.data.get(self._inverter_device.inverter_id) or {}
             # device_data = self._inverter_device.device_data
             # print('device_data')
             output_source_priority = resolve_output_priority(data)
@@ -167,7 +172,7 @@ class InverterOutputPrioritySelect(SelectBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        data = self.coordinator.data[self._inverter_device.inverter_id]
+        data = self.data
         # device_data = self._inverter_device.device_data
         mapper = {
             'UtilityFirst': 'UtilityFirst',
@@ -204,12 +209,12 @@ class InverterChargeSourcePrioritySelect(SelectBase):
         self._attr_options = ['UtilityFirst', 'SolarFirst', 'SolarAndUtility']  ## ChargeSourcePriority
 
         if coordinator.data is not None:
-            data = coordinator.data[self._inverter_device.inverter_id]
+            data = coordinator.data.get(self._inverter_device.inverter_id) or {}
             self._attr_current_option = resolve_chrage_source_priority(data)
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        data = self.coordinator.data[self._inverter_device.inverter_id]
+        data = self.data
         self._attr_current_option = resolve_chrage_source_priority(data)
         self.async_write_ha_state()
 
@@ -246,14 +251,14 @@ class InverterMaxUtilityChargingCurrentNumber(SelectBase):
         self._raw_readback: str | None = None
 
         if coordinator.data is not None:
-            data = coordinator.data[self._inverter_device.inverter_id]
+            data = coordinator.data.get(self._inverter_device.inverter_id) or {}
             raw = resolve_max_utility_charging_current(data)
             self._raw_readback = raw if raw is None else str(raw)
             self._attr_current_option = _normalize_amps(raw)
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        data = self.coordinator.data[self._inverter_device.inverter_id]
+        data = self.data
         raw = resolve_max_utility_charging_current(data)
         self._raw_readback = raw if raw is None else str(raw)
         self._attr_current_option = _normalize_amps(raw)

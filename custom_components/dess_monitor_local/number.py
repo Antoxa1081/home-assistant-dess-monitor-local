@@ -58,7 +58,10 @@ class NumberBase(CoordinatorEntity, NumberEntity):
 
     @property
     def data(self):
-        return self.coordinator.data[self._inverter_device.inverter_id]
+        # Safe for a freshly-added hub child not yet in coordinator.data.
+        return (self.coordinator.data or {}).get(
+            self._inverter_device.inverter_id
+        ) or {}
 
 
 class _VSocConfigNumber(NumberEntity, RestoreEntity):
