@@ -38,6 +38,15 @@ class DirectCoordinator(DataUpdateCoordinator):
     # sub-dict before the entity finally goes to "unavailable".
     _RETRY_DELAY_S = 0.25
     _MAX_CONSECUTIVE_FAILURES = 3
+    # Per-device poll bound, applied ONLY with multiple devices (an EyBond hub
+    # with several children). One stuck/half-attentive dongle answering FC=4
+    # slowly used to drag the whole-hub gather past the 120s cycle cap, which
+    # failed the entire update and starved EVERY child of data ("one update per
+    # ~30 min" in the field). Capping each child means a stuck one freezes on
+    # last-known for the cycle while the healthy ones still publish on time.
+    # Single-device entries stay uncapped — a legacy cloud-proxied transport can
+    # legitimately take minutes and has no sibling to starve.
+    _PER_DEVICE_POLL_TIMEOUT = 45.0
 
     def __init__(self, hass: HomeAssistant, config_entry, targets=None):
         """Initialize my coordinator.
@@ -79,6 +88,16 @@ class DirectCoordinator(DataUpdateCoordinator):
         coordinator.async_config_entry_first_refresh.
         """
         self.devices = await self.get_active_devices()
+
+    def set_targets(self, targets) -> None:
+        """Swap the explicit poll-target list at runtime.
+
+        Used by the EyBond hub's in-place child reconcile (no entry reload):
+        the next poll cycle reads ``self.devices``, and ``_async_update_data``
+        snapshots it per cycle, so replacing the list between cycles is safe.
+        """
+        self._targets = list(targets)
+        self.devices = list(targets)
 
     async def get_active_devices(self):
         # Explicit targets (EyBond hub children) take precedence.
@@ -238,8 +257,33 @@ class DirectCoordinator(DataUpdateCoordinator):
                     #     }
                     # }
 
-                data_map = dict(await asyncio.gather(*map(fetch_device_data, self.devices)))
-                # print('devices', self.devices, data_map)
+                # With multiple devices (hub children), bound each one so a
+                # single stuck dongle can't blow the 120s cycle and starve the
+                # others (see _PER_DEVICE_POLL_TIMEOUT). A device that exceeds
+                # the bound freezes on its last-known data for this cycle.
+                per_device_timeout = (
+                    self._PER_DEVICE_POLL_TIMEOUT if len(self.devices) > 1 else None
+                )
+
+                async def fetch_device_guarded(target):
+                    if per_device_timeout is None:
+                        return await fetch_device_data(target)
+                    key = target.id
+                    try:
+                        return await asyncio.wait_for(
+                            fetch_device_data(target), per_device_timeout
+                        )
+                    except TimeoutError:
+                        _LOGGER.warning(
+                            "%s: poll exceeded %.0fs — freezing on last-known "
+                            "data this cycle so other devices still update",
+                            key, per_device_timeout,
+                        )
+                        return key, dict(prev_data.get(key) or {})
+
+                data_map = dict(
+                    await asyncio.gather(*map(fetch_device_guarded, self.devices))
+                )
                 return data_map
         except TimeoutError as err:
             # Raising ConfigEntryAuthFailed will cancel future updates

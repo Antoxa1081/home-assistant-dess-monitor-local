@@ -24,6 +24,7 @@ from homeassistant.helpers import entity_registry as er  # noqa: E402
 from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
 
 from custom_components.dess_monitor_local.api.protocols.eybond_discovery import (  # noqa: E402
+    DongleRecord,
     EybondRegistry,
 )
 from custom_components.dess_monitor_local.const import (  # noqa: E402
@@ -217,3 +218,65 @@ async def test_soc_unavailable_until_capacity_set(hass, enable_custom_integratio
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_hub_reconcile_adds_child_in_place(
+    hass, enable_custom_integrations, hass_storage
+):
+    """async_reconcile_children adds a child's entities WITHOUT a full reload.
+
+    Proof it is in-place: the new PN is added to the LIVE registry only (never
+    written to the Store), so a full reload would re-read the Store and miss
+    it. Its entities appearing therefore proves the platform-only reconcile ran
+    (and that the listener was not bounced).
+    """
+    store_key = f"{DOMAIN}.eybond_hub.eybondhub1"
+    hass_storage[store_key] = {
+        "version": 1, "minor_version": 1, "key": store_key,
+        "data": {
+            "PNTEST000001": {
+                "pn": "PNTEST000001", "name": "Child A", "enabled": True,
+                "protocol": "voltronic", "devaddr": 1, "status": "disconnected",
+            }
+        },
+    }
+    entry = _hub_entry()
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.dess_monitor_local.eybond_hub.get_eybond_manager",
+        side_effect=_fake_get_manager,
+    ), patch(
+        "custom_components.dess_monitor_local.eybond_hub.shutdown_eybond_manager",
+        side_effect=_fake_shutdown_manager,
+    ), patch(
+        "custom_components.dess_monitor_local.coordinators.direct_coordinator.get_direct_data",
+        side_effect=_fake_get,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        from custom_components.dess_monitor_local import eybond_hub
+        runtime = eybond_hub.get_hub_runtime(hass, entry.entry_id)
+        # Add a SECOND child to the LIVE registry only (not persisted).
+        runtime.registry.put(
+            DongleRecord(
+                pn="PNTEST000002", name="Child B", enabled=True,
+                protocol="voltronic", devaddr=1,
+            )
+        )
+        await eybond_hub.async_reconcile_children(hass, entry)
+        await hass.async_block_till_done()
+
+        ent_reg = er.async_get(hass)
+        ids = [
+            e.unique_id
+            for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+        ]
+        assert any(u.startswith("eybond:PNTEST000001:1") for u in ids)
+        # In-place reconcile surfaced the live-only child (a reload could not).
+        assert any(u.startswith("eybond:PNTEST000002:1") for u in ids)
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()

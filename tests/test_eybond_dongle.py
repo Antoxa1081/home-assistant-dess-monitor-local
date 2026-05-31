@@ -8,6 +8,7 @@ routed by PN) using in-memory fake StreamReader/StreamWriter so no real
 socket is bound."""
 import asyncio
 import struct
+from unittest.mock import patch
 
 from custom_components.dess_monitor_local.api.protocols import eybond_dongle as ey
 
@@ -135,10 +136,11 @@ class _FakeWriter:
     """Captures each ``write()`` as a discrete frame (EyBond writes whole
     frames in one call) and records close()."""
 
-    def __init__(self, peer=("10.0.0.9", 9999)):
+    def __init__(self, peer=("10.0.0.9", 9999), fail_drain=False):
         self.frames: list[bytes] = []
         self.closed = False
         self._peer = peer
+        self.fail_drain = fail_drain
 
     def get_extra_info(self, key):
         return self._peer if key == "peername" else None
@@ -147,7 +149,8 @@ class _FakeWriter:
         self.frames.append(bytes(data))
 
     async def drain(self) -> None:
-        pass
+        if self.fail_drain:
+            raise ConnectionResetError("broken pipe")
 
     def close(self) -> None:
         self.closed = True
@@ -300,6 +303,45 @@ class TestMultiSession:
 
         asyncio.run(scenario())
 
+    def test_pnless_single_dongle_resolves(self):
+        # Legacy single-dongle path: a PN-less request routes to the only
+        # connected session.
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            t = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: len(mgr._sessions) == 1)
+            sess = await mgr._wait_for_session(None, 5.0, "QPIGS", 1)
+            assert sess is not None and sess.pn == "PN0000000001"
+            await _drain(mgr, t)
+
+        asyncio.run(scenario())
+
+    def test_pnless_ambiguous_is_dropped(self):
+        # S2 guard: PN-less request with >1 dongle connected can't be
+        # disambiguated — dropped (None), and no frame leaks to either dongle.
+        async def scenario():
+            mgr = _new_manager()
+            rA, wA = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            rB, wB = _FakeReader(), _FakeWriter(("10.0.0.2", 2222))
+            tA = asyncio.create_task(mgr._handle_session(rA, wA))
+            tB = asyncio.create_task(mgr._handle_session(rB, wB))
+            rA.feed(_dongle_heartbeat("PN_AAAAAAA01"))
+            rB.feed(_dongle_heartbeat("PN_BBBBBBB02"))
+            await _until(lambda: len(mgr._sessions) == 2)
+
+            wA.frames.clear()
+            wB.frames.clear()
+            # PN-less send must drop, not route to "first identified".
+            result = await mgr.send_frame(1, b"QPIGS\r", timeout=5.0, pn=None)
+            assert result is None
+            assert _find_fc4(wA.frames)[1] is None
+            assert _find_fc4(wB.frames)[1] is None
+            await _drain(mgr, tA, tB)
+
+        asyncio.run(scenario())
+
     def test_disconnect_isolation(self):
         async def scenario():
             mgr = _new_manager()
@@ -378,7 +420,8 @@ class TestMultiSession:
             await _until(lambda: mgr.connected)
             assert mgr._should_announce() is False
 
-            # Mark two PNs as expected (enabled children); one is missing.
+            # Mark two PNs as expected (enabled children); one is missing →
+            # announce immediately (these dongles only reconnect on announce).
             mgr.registry.set_enabled("PN0000000001", True)
             mgr.registry.set_enabled("PN_MISSING002", True)
             assert mgr._should_announce() is True  # PN_MISSING002 absent
@@ -413,6 +456,65 @@ class TestMultiSession:
             assert mgr._force_announce_until == 0.0
 
             await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_reannounce_immediately_when_dongle_drops(self):
+        # These dongles clean-close every few seconds and only reconnect on a
+        # fresh announce, so announce must resume the moment one drops — no
+        # grace (the removed S1 anti-thrash left them offline ~60s).
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.connected)
+            mgr.registry.set_enabled("PN0000000001", True)
+            assert mgr._should_announce() is False   # connected → quiet
+
+            r.feed_eof()
+            await _until(lambda: not mgr.connected)
+            assert mgr._should_announce() is True     # dropped → announce NOW
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+        asyncio.run(scenario())
+
+    def test_forward_response_timeout_is_capped(self):
+        # A forward whose reply never arrives returns None at
+        # FORWARD_RESPONSE_TIMEOUT, NOT the (larger) per-command timeout the
+        # coordinator passes — otherwise a half-attentive dongle stalls the
+        # cycle for 30s. Patch the cap tiny and pass a big timeout: if the cap
+        # weren't applied this test would hang for 30s.
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.identified_pns == ["PN0000000001"])
+            with patch.object(ey, "FORWARD_RESPONSE_TIMEOUT", 0.05):
+                result = await mgr.send_frame(
+                    1, b"QPIGS\r", timeout=30.0, pn="PN0000000001"
+                )
+            assert result is None        # no reply within the 0.05s cap
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+
+    def test_dead_session_closed_on_heartbeat_write_failure(self):
+        # S3: a failed heartbeat write means the connection is dead — the loop
+        # closes the writer so the read side unblocks and the session drops
+        # fast (instead of lingering and wasting 30s response timeouts).
+        async def scenario():
+            mgr = _new_manager()
+            r = _FakeReader()
+            w = _FakeWriter(("10.0.0.1", 1111), fail_drain=True)
+            sess = ey._Session(reader=r, writer=w, peer="10.0.0.1:1111")
+            # The loop sends one heartbeat; drain() raises → it closes & returns.
+            await mgr._heartbeat_loop(sess)
+            assert w.closed is True
+            await _drain(mgr)
 
         asyncio.run(scenario())
 

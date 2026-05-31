@@ -592,7 +592,10 @@ class DirectDeviceStatusSensor(DirectSensorBase):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        qpigs = self.data["qpigs"]
+        # ``.get`` (not ``[]``) so an offline child without a qpigs section
+        # doesn't raise KeyError across the coordinator update fan-out — which
+        # otherwise aborted the in-place reconcile and forced a full reload.
+        qpigs = self.data.get("qpigs", {})
         flags = int(qpigs.get("device_status_bits_b7_b0", 0))
         if flags & DeviceStatusBitsB7B0.FAULT:
             self._attr_native_value = 'FAULT'
@@ -607,7 +610,7 @@ class DirectDeviceStatusSensor(DirectSensorBase):
 
     @property
     def extra_state_attributes(self):
-        qpigs = self.data["qpigs"]
+        qpigs = self.data.get("qpigs", {})
         bits = qpigs.get("device_status_bits_b7_b0", 0)
         attrs = parse_device_status_bits_b7_b0(bits)
         return attrs

@@ -18,6 +18,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 
 from .api.protocols.eybond_discovery import (
@@ -174,6 +175,63 @@ async def async_unload_eybond_hub(hass: HomeAssistant, entry: ConfigEntry) -> No
     runtime = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if runtime is not None:
         await runtime.stop()
+
+
+async def async_reconcile_children(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply the current discovery registry to the running hub WITHOUT a full
+    entry reload — so the EyBond listener (and the dongle connections) are
+    never bounced.
+
+    Reloads only the platforms: swaps the coordinator's poll targets, rebuilds
+    the hub's child list, drops registry devices for children that are gone,
+    then re-forwards the platforms so entities are recreated for the new set.
+    Falls back to a full reload if the hub isn't in a reconcilable state or
+    anything goes wrong (worst case = the old reload behaviour, never a
+    half-reloaded hub).
+    """
+    from . import PLATFORMS  # late import avoids a circular import at load
+
+    runtime = get_hub_runtime(hass, entry.entry_id)
+    hub_obj = entry.runtime_data
+    coordinator = getattr(hub_obj, "direct_coordinator", None)
+    if runtime is None or hub_obj is None or coordinator is None:
+        _LOGGER.debug("EyBond reconcile: hub not ready — falling back to reload")
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    bind_host, bind_port, broadcast, announce_ip = hub_listener_config(entry)
+    new_targets = build_child_targets(
+        runtime.registry, bind_host, bind_port, broadcast, announce_ip
+    )
+    new_ids = {t.id for t in new_targets}
+    old_ids = {item.inverter_id for item in hub_obj.items}
+
+    try:
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        coordinator.set_targets(new_targets)
+        await hub_obj.rebuild_items()
+
+        # Drop registry devices for children that no longer exist (their
+        # entities were already removed by the platform unload above).
+        for child in old_ids - new_ids:
+            reg = dr.async_get(hass)
+            dev = reg.async_get_device(identifiers={(DOMAIN, child)})
+            if dev is not None:
+                reg.async_update_device(
+                    dev.id, remove_config_entry_id=entry.entry_id
+                )
+
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await coordinator.async_request_refresh()
+    except Exception:  # noqa: BLE001 — never leave the hub half-reloaded
+        _LOGGER.exception("EyBond reconcile failed — falling back to full reload")
+        await hass.config_entries.async_reload(entry.entry_id)
+        return
+
+    _LOGGER.info(
+        "EyBond hub reconciled in place: %d child(ren) (+%d/-%d) — listener kept",
+        len(new_ids), len(new_ids - old_ids), len(old_ids - new_ids),
+    )
 
 
 async def async_migrate_legacy_to_hub(

@@ -79,12 +79,21 @@ ANNOUNCE_CHECK_INTERVAL = 1.0
 # dongles receive ``set>server`` and attach. Briefly flaps connected dongles
 # (broadcast can't target one), which is acceptable for an explicit scan.
 REDISCOVERY_WINDOW = 60.0
-# Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
-# if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
-# (FC=4) does NOT count as keepalive. Observed in field logs: every session
-# died ~4.4s after connect with the old 60s interval, causing constant
-# reconnect churn. Send well inside that window.
-HEARTBEAT_INTERVAL = 3.0
+# Server→dongle keepalive cadence, advertised to the dongle in the heartbeat
+# payload. 60s matches the reference implementation (ha-smartess-local). An
+# earlier note here blamed a ~4.4s session death on a too-slow 60s heartbeat
+# and dropped this to 3s — that was a MISDIAGNOSIS: the ~4s "clean close" is
+# the dongle handing itself back to the SmartESS cloud (block the dongle from
+# the internet to stop it), NOT heartbeat starvation. It clean-closes at ~4s
+# with 3s heartbeats too, so the fast cadence bought nothing but 20x the
+# traffic. The heartbeat frame is byte-identical to the reference's.
+HEARTBEAT_INTERVAL = 60.0
+# Cap on how long an FC=4 forward waits for the inverter's reply, regardless of
+# the (larger) per-command timeout the coordinator passes. Matches the
+# reference's 5s request timeout: a connected dongle answers in well under a
+# second, so a longer wait only stalls the cycle on a half-attentive dongle
+# (the 30s waits behind "QPIGS TIMEOUT after 30.0s" in the field logs).
+FORWARD_RESPONSE_TIMEOUT = 5.0
 DEFAULT_TIMEOUT = 5.0
 # How long a request waits for its dongle to (re)connect before giving up.
 # Kept short: requests are serialized through one shared command queue, so a
@@ -352,23 +361,28 @@ class EybondManager:
             self._ready_by_pn[pn] = ev
         return ev
 
-    def _any_session(self) -> _Session | None:
-        """Deterministically pick one session for a legacy PN-less request."""
-        if not self._sessions:
-            return None
-        if len(self._sessions) > 1:
-            _LOGGER.warning(
-                "EyBond: PN-less request with %d sessions connected on %s:%d; "
-                "routing to first identified — specify a PN to target a "
-                "specific dongle",
-                len(self._sessions), self.bind_host, self.bind_port,
+    def _pnless_target(self, context: str = "") -> _Session | None:
+        """Resolve a PN-less request to the single connected session.
+
+        Returns that session only when exactly one dongle is connected
+        (the legacy single-dongle path). When MORE than one dongle is
+        connected the request is ambiguous — we can't know which inverter
+        it means — so it's dropped with an actionable error instead of
+        silently routing to the first dongle (which would feed one entry
+        another inverter's data). The fix for the user is to configure each
+        device via the EyBond hub so every child carries its dongle PN.
+        """
+        n = len(self._sessions)
+        if n == 1:
+            return next(iter(self._sessions))
+        if n > 1:
+            _LOGGER.error(
+                "EyBond: PN-less request on %s:%d with %d dongles connected — "
+                "cannot target one, dropping %s. Configure this device via "
+                "the EyBond hub so each child carries its dongle PN.",
+                self.bind_host, self.bind_port, n, context or "frame",
             )
-        identified = sorted(
-            (s for s in self._sessions if s.pn), key=lambda s: s.pn
-        )
-        if identified:
-            return identified[0]
-        return next(iter(self._sessions))
+        return None
 
     def _drop_session(self, sess: _Session, reason: str) -> None:
         """Idempotently remove a session from all maps and fail its pending."""
@@ -423,11 +437,8 @@ class EybondManager:
                     "EyBond: TCP listener READY, bound sockets=[%s] (broadcast target %s)",
                     sock_addrs, self.broadcast,
                 )
-            else:
-                _LOGGER.debug(
-                    "EyBond: TCP listener already running on %s:%d",
-                    self.bind_host, self.bind_port,
-                )
+            # (no log on the already-running path — ensure_started() runs on
+            # every send, so it would spam DEBUG once per poll.)
             # The announcer task stays alive, but only actually broadcasts
             # while an expected dongle is missing (see _should_announce) —
             # broadcasting at a connected dongle makes it reconnect.
@@ -481,21 +492,23 @@ class EybondManager:
     def _should_announce(self) -> bool:
         """Whether to keep broadcasting ``set>server``.
 
-        Each announce makes the EyBond dongle (re)connect — so broadcasting
-        to an already-connected dongle knocks it offline and it reconnects,
-        causing constant flapping (field-observed ~5s churn). We therefore
-        announce only while a dongle we actually want is still missing:
+        Announce while a dongle we want is still missing, and resume
+        IMMEDIATELY (fast cadence) the moment one drops. These EyBond dongles
+        clean-close their TCP session every few seconds on their own (firmware
+        behaviour — confirmed in the standalone probe and v1.0.0) and only
+        reconnect in response to a fresh announce, so any hold-off just leaves
+        them offline. The standalone probe restarts its announcer on every
+        disconnect and the dongle reconnects in ~0.2s; we do the same.
+
+        (An earlier "anti-thrash" grace assumed a dropped dongle self-
+        reconnects — it does not on this hardware, which made it stay offline
+        ~60s. Removed.)
 
         - hub with enabled children: until every enabled PN is connected;
-        - otherwise (legacy single-device / pre-config discovery): until at
-          least one dongle is connected.
+        - otherwise (legacy single-device / discovery): until at least one
+          dongle is connected.
 
-        Once satisfied the announcer goes quiet and sessions stay stable
-        (kept alive by the per-session heartbeat). It resumes automatically
-        when an expected dongle drops.
-
-        A forced-rediscovery window (see :meth:`force_rediscovery`) overrides
-        the gate and broadcasts regardless of connection state.
+        A forced-rediscovery window overrides the gate.
         """
         if self._force_announce_until:
             if asyncio.get_running_loop().time() < self._force_announce_until:
@@ -562,7 +575,7 @@ class EybondManager:
             while True:
                 if self._should_announce():
                     if was_paused:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "EyBond: announce RESUMED — expected dongle missing"
                         )
                     was_paused = False
@@ -583,7 +596,7 @@ class EybondManager:
                 elif not was_paused:
                     # Don't keep knocking connected dongles offline.
                     was_paused = True
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "EyBond: announce PAUSED — expected dongle(s) connected "
                         "(%s); will resume if one drops",
                         self.identified_pns,
@@ -610,7 +623,7 @@ class EybondManager:
     ) -> None:
         peer = writer.get_extra_info("peername")
         peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
-        _LOGGER.info("EyBond: dongle CONNECTED from %s", peer_str)
+        _LOGGER.debug("EyBond: dongle CONNECTED from %s", peer_str)
 
         # Multi-session: a new connection NEVER evicts an existing one.
         # It joins as unidentified until its heartbeat reveals a PN.
@@ -641,7 +654,7 @@ class EybondManager:
                         # session bound to this PN before claiming it.
                         old = self._sessions_by_pn.get(pn)
                         if old is not None and old is not sess:
-                            _LOGGER.warning(
+                            _LOGGER.debug(
                                 "EyBond: PN=%s reconnected from %s, replacing "
                                 "stale session %s",
                                 pn, peer_str, old.peer,
@@ -656,7 +669,7 @@ class EybondManager:
                         self._sessions_by_pn[pn] = sess
                         self._ready_event_for(pn).set()
                         self.registry.record_seen(pn, peer_str)
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "EyBond: dongle identified, PN=%s peer=%s "
                             "(now %d session(s): %s)",
                             pn, peer_str, len(self._sessions), self.identified_pns,
@@ -673,7 +686,7 @@ class EybondManager:
                     if fut and not fut.done():
                         fut.set_result(payload)
                     else:
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "EyBond: unsolicited FC=4 tid=%d devaddr=%d (%d bytes) "
                             "payload=%s",
                             h.tid, h.devaddr, len(payload), payload.hex(),
@@ -685,7 +698,7 @@ class EybondManager:
                     )
 
         except asyncio.IncompleteReadError:
-            _LOGGER.info("EyBond: dongle %s DISCONNECTED (clean close)", peer_str)
+            _LOGGER.debug("EyBond: dongle %s DISCONNECTED (clean close)", peer_str)
         except asyncio.CancelledError:
             _LOGGER.info("EyBond: session %s cancelled", peer_str)
             raise
@@ -728,9 +741,19 @@ class EybondManager:
                         sess.peer, tid, int(HEARTBEAT_INTERVAL), frame.hex(),
                     )
                 except (ConnectionError, OSError) as err:
+                    # A failed heartbeat write means the TCP connection is dead.
+                    # Close the writer so the session's read loop unblocks and
+                    # drops the session NOW — otherwise a half-open connection
+                    # lingers and its polls waste the full 30s response timeout
+                    # before failing (S3).
                     _LOGGER.warning(
-                        "EyBond: heartbeat write to %s failed: %s", sess.peer, err
+                        "EyBond: heartbeat write to %s failed: %s — "
+                        "closing dead session", sess.peer, err,
                     )
+                    try:
+                        sess.writer.close()
+                    except Exception:
+                        pass
                     return
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
         except asyncio.CancelledError:
@@ -751,13 +774,15 @@ class EybondManager:
                 return sess
             ev = self._ready_event_for(pn)
         else:
-            sess = self._any_session()
-            if sess is not None:
-                return sess
+            # Legacy PN-less path. With one or more dongles already connected,
+            # resolve now (drops if ambiguous — waiting wouldn't disambiguate).
+            # Only wait when nothing is connected yet.
+            if self._sessions:
+                return self._pnless_target(context)
             ev = self._any_ready
 
         wait = min(timeout, SESSION_WAIT_TIMEOUT)
-        _LOGGER.info(
+        _LOGGER.debug(
             "EyBond: no dongle connected yet, waiting up to %.1fs for %s "
             "(pn=%s devaddr=%d) — UDP announcer is broadcasting",
             wait, context or "frame", pn or "<any>", devaddr,
@@ -765,12 +790,14 @@ class EybondManager:
         try:
             await asyncio.wait_for(ev.wait(), timeout=wait)
         except TimeoutError:
-            _LOGGER.warning(
+            # Expected during the brief clean-close gaps these dongles cycle
+            # through (they reconnect within ~1s); DEBUG, not WARNING.
+            _LOGGER.debug(
                 "EyBond: no dongle (pn=%s) within %.1fs, dropping %s devaddr=%d",
                 pn or "<any>", wait, context or "frame", devaddr,
             )
             return None
-        return self._sessions_by_pn.get(pn) if pn else self._any_session()
+        return self._sessions_by_pn.get(pn) if pn else self._pnless_target(context)
 
     async def send_frame(
         self,
@@ -807,22 +834,29 @@ class EybondManager:
                 )
             except (ConnectionError, OSError) as err:
                 sess.pending.pop(tid, None)
-                _LOGGER.warning(
+                # Dongle closed mid-send (normal during clean-close cycling).
+                _LOGGER.debug(
                     "EyBond: write %s devaddr=%d to %s failed: %s",
                     context or "frame", devaddr, sess.peer, err,
                 )
                 return None
+            # Cap the reply wait — a connected dongle answers in well under a
+            # second, so a longer wait only stalls the cycle on a half-attentive
+            # dongle (matches the reference's 5s request timeout).
+            resp_timeout = min(timeout, FORWARD_RESPONSE_TIMEOUT)
             try:
-                raw = await asyncio.wait_for(fut, timeout=timeout)
+                raw = await asyncio.wait_for(fut, timeout=resp_timeout)
             except TimeoutError:
                 sess.pending.pop(tid, None)
-                _LOGGER.warning(
+                # No reply within the cap — usual when the dongle clean-closed
+                # mid-poll; it reconnects and the next cycle succeeds.
+                _LOGGER.debug(
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",
-                    context or "frame", devaddr, tid, timeout,
+                    context or "frame", devaddr, tid, resp_timeout,
                 )
                 return None
             except ConnectionError as err:
-                _LOGGER.info(
+                _LOGGER.debug(
                     "EyBond: %s devaddr=%d aborted (session lost): %s",
                     context or "frame", devaddr, err,
                 )

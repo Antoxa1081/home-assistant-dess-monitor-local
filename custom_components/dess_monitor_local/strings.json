@@ -120,27 +120,8 @@
         "description": "This converts the single-device entry into an EyBond hub: one listener that auto-discovers dongles by serial number (PN) and lets you add more later. The currently connected dongle becomes a configured child with its current protocol and address. Entity history is preserved. The dongle must be online now so its PN can be captured. Submit to convert and reload."
       },
       "devices": {
-        "title": "Discovered devices",
-        "description": "Pick a dongle (by serial number / PN) to configure.",
-        "data": {
-          "pn": "Dongle"
-        }
-      },
-      "device_edit": {
-        "title": "Configure dongle {pn}",
-        "description": "Status: {status}. Last seen: {last_seen}. Enable the device and assign a protocol to start polling it.",
-        "data": {
-          "enabled": "Enabled",
-          "name": "Name",
-          "protocol": "Protocol",
-          "eybond_devaddr": "RS485 device address",
-          "remove": "Remove this device"
-        },
-        "data_description": {
-          "protocol": "Choose 'none' to keep the dongle discovered but not polled.",
-          "eybond_devaddr": "RS485 slave address of the inverter behind this dongle (1 unless daisy-chained).",
-          "remove": "Delete this dongle from discovery. If it is still online it will be re-discovered on its next heartbeat. Other fields are ignored when this is checked."
-        }
+        "title": "Configure discovered devices",
+        "description": "Configure all discovered dongles here and submit once. Fields are grouped per dongle by serial number (PN): enable it, name it, choose a protocol ('none' = discovered but not polled), set the RS485 address (1 unless daisy-chained), or tick remove to forget it. Applying does NOT reload the hub — your connected dongles stay online.\n\nDiscovered:\n{devices}"
       },
       "listener": {
         "title": "Listener settings",
