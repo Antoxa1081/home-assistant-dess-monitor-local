@@ -90,12 +90,21 @@ REDISCOVERY_WINDOW = 60.0
 # cadence) to keep trying without hammering the survivors.
 REANNOUNCE_GRACE = 25.0
 STEADY_ANNOUNCE_INTERVAL = 60.0
-# Server→dongle keepalive cadence. The EyBond dongle closes the TCP session
-# if it doesn't receive a server FC=1 heartbeat within ~4-5s — polling traffic
-# (FC=4) does NOT count as keepalive. Observed in field logs: every session
-# died ~4.4s after connect with the old 60s interval, causing constant
-# reconnect churn. Send well inside that window.
-HEARTBEAT_INTERVAL = 3.0
+# Server→dongle keepalive cadence, advertised to the dongle in the heartbeat
+# payload. 60s matches the reference implementation (ha-smartess-local). An
+# earlier note here blamed a ~4.4s session death on a too-slow 60s heartbeat
+# and dropped this to 3s — that was a MISDIAGNOSIS: the ~4s "clean close" is
+# the dongle handing itself back to the SmartESS cloud (block the dongle from
+# the internet to stop it), NOT heartbeat starvation. It clean-closes at ~4s
+# with 3s heartbeats too, so the fast cadence bought nothing but 20x the
+# traffic. The heartbeat frame is byte-identical to the reference's.
+HEARTBEAT_INTERVAL = 60.0
+# Cap on how long an FC=4 forward waits for the inverter's reply, regardless of
+# the (larger) per-command timeout the coordinator passes. Matches the
+# reference's 5s request timeout: a connected dongle answers in well under a
+# second, so a longer wait only stalls the cycle on a half-attentive dongle
+# (the 30s waits behind "QPIGS TIMEOUT after 30.0s" in the field logs).
+FORWARD_RESPONSE_TIMEOUT = 5.0
 DEFAULT_TIMEOUT = 5.0
 # How long a request waits for its dongle to (re)connect before giving up.
 # Kept short: requests are serialized through one shared command queue, so a
@@ -875,13 +884,17 @@ class EybondManager:
                     context or "frame", devaddr, sess.peer, err,
                 )
                 return None
+            # Cap the reply wait — a connected dongle answers in well under a
+            # second, so a longer wait only stalls the cycle on a half-attentive
+            # dongle (matches the reference's 5s request timeout).
+            resp_timeout = min(timeout, FORWARD_RESPONSE_TIMEOUT)
             try:
-                raw = await asyncio.wait_for(fut, timeout=timeout)
+                raw = await asyncio.wait_for(fut, timeout=resp_timeout)
             except TimeoutError:
                 sess.pending.pop(tid, None)
                 _LOGGER.warning(
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",
-                    context or "frame", devaddr, tid, timeout,
+                    context or "frame", devaddr, tid, resp_timeout,
                 )
                 return None
             except ConnectionError as err:
