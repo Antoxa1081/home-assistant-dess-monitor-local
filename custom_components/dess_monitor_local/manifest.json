@@ -1,6 +1,12 @@
 {
   "domain": "dess_monitor_local",
   "name": "DESS Monitor Local",
+  "after_dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api"
+  ],
   "codeowners": [
     "@Antoxa1081"
   ],

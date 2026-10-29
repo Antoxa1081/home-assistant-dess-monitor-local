@@ -154,8 +154,13 @@ async def async_apply_debug_panel(hass: HomeAssistant) -> None:
     """Show/hide the sidebar panel to match the hub option (idempotent).
 
     Called on every entry setup, so toggling the option and reloading the
-    integration brings the sidebar in line with the new setting.
+    integration brings the sidebar in line with the new setting. Skipped when
+    the HTTP server isn't loaded (minimal configs, test harnesses): the panel
+    is a UI nicety and must never fail entry setup.
     """
+    if getattr(hass, "http", None) is None:
+        _LOGGER.debug("HTTP component not loaded; DESS debug panel unavailable")
+        return
     await _ensure_ws_registered(hass)
     wanted = _debug_panel_wanted(hass)
     shown = bool(hass.data.get(_PANEL_REGISTERED))
