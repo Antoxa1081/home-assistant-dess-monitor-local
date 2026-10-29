@@ -4,11 +4,16 @@ No pytest-asyncio dependency — each test drives the coroutine with
 ``asyncio.run`` and fakes the stream pair so no real socket is opened.
 """
 import asyncio
+import types
 
 import pytest
 
 from custom_components.dess_monitor_local.api.commands.direct_command_queue import (
+    QUEUES_KEY,
     CommandQueue,
+    endpoint_key,
+    get_command_queue,
+    stop_all_command_queues,
 )
 from custom_components.dess_monitor_local.api.crc import crc16_modbus
 from custom_components.dess_monitor_local.api.protocols import modbus_rtu
@@ -91,6 +96,62 @@ class TestCommandQueue:
 
 async def _const(v):
     return v
+
+
+# ---------------------------------------------------------------------------
+# Per-endpoint command queues
+# ---------------------------------------------------------------------------
+class TestEndpointKey:
+    def test_network_endpoints_keyed_by_host_port(self):
+        assert endpoint_key("tcp://192.168.1.5:502") == "tcp://192.168.1.5:502"
+        # Same host, different port -> different endpoint (different socket).
+        assert endpoint_key("modbus://10.0.0.1:8899") != endpoint_key(
+            "modbus://10.0.0.1:9000"
+        )
+        # Different protocol/host -> different key.
+        assert endpoint_key("pi18://10.0.0.1:502") != endpoint_key(
+            "pi18://10.0.0.2:502"
+        )
+
+    def test_eybond_keyed_per_dongle_pn_not_listener(self):
+        a = endpoint_key("eybond://0.0.0.0:8899/1?pn=Q123&announce=10.0.0.32")
+        b = endpoint_key("eybond-modbus://0.0.0.0:8899/1?pn=I456&announce=10.0.0.32")
+        # Same listener (0.0.0.0:8899) but different dongles -> different queues.
+        assert a == "eybond:Q123"
+        assert b == "eybond:I456"
+        assert a != b
+
+    def test_serial_and_blank_fallback(self):
+        # Serial path has no port -> the device string is the endpoint.
+        assert endpoint_key("pi18-serial://COM3") == "pi18-serial://COM3"
+        assert endpoint_key("/dev/ttyUSB0") == "/dev/ttyUSB0"
+        assert endpoint_key("") == "?"
+
+
+class TestQueueRegistry:
+    def test_same_endpoint_reuses_queue_distinct_endpoints_dont(self):
+        async def scenario():
+            hass = types.SimpleNamespace(data={})
+            q1 = await get_command_queue(hass, "tcp://10.0.0.1:502")
+            q2 = await get_command_queue(hass, "tcp://10.0.0.1:502")
+            q3 = await get_command_queue(hass, "tcp://10.0.0.2:502")
+            registry = hass.data[QUEUES_KEY]
+            await stop_all_command_queues(hass)
+            return q1 is q2, q1 is q3, len(registry), QUEUES_KEY in hass.data
+
+        same, distinct, count, key_left = asyncio.run(scenario())
+        assert same is True          # same endpoint -> one shared worker
+        assert distinct is False     # different endpoint -> separate worker
+        assert count == 2
+        assert key_left is False     # stop_all clears the registry
+
+    def test_stop_all_is_safe_when_empty(self):
+        async def scenario():
+            hass = types.SimpleNamespace(data={})
+            await stop_all_command_queues(hass)  # nothing created yet
+            return True
+
+        assert asyncio.run(scenario()) is True
 
 
 # ---------------------------------------------------------------------------

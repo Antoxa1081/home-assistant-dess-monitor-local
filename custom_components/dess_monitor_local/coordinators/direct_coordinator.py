@@ -10,6 +10,9 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from custom_components.dess_monitor_local import diag_hub
+from custom_components.dess_monitor_local.api.commands.direct_command_queue import (
+    get_command_queue,
+)
 from custom_components.dess_monitor_local.api.dispatcher import get_direct_data
 from custom_components.dess_monitor_local.const import (
     CONF_DEVICE,
@@ -165,7 +168,6 @@ class DirectCoordinator(DataUpdateCoordinator):
             self.config_entry.options.get(CONF_STRICT_CRC, DEFAULT_STRICT_CRC)
         )
         prev_data = self.data or {}
-        queue = self.hass.data["dess_monitor_local_queue"]
 
         async def fetch_with_retry(key: str, uri: str, cmd: str, section: str) -> dict:
             """Read a command with one fast retry, then apply the pure
@@ -185,6 +187,10 @@ class DirectCoordinator(DataUpdateCoordinator):
             for attempt in range(2):
                 try:
                     if via_queue:
+                        # One serialized queue per physical endpoint (host:port /
+                        # serial path) — same device can't interleave, different
+                        # devices poll in parallel.
+                        queue = await get_command_queue(self.hass, uri)
                         result = await queue.enqueue(
                             lambda d=uri, c=cmd: get_direct_data(
                                 d, c, 30, strict_crc=strict_crc

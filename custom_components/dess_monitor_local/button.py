@@ -16,6 +16,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from custom_components.dess_monitor_local import HubConfigEntry
+from custom_components.dess_monitor_local.api.commands.direct_command_queue import (
+    get_command_queue,
+)
 from custom_components.dess_monitor_local.api.protocols.modbus_rtu import (
     parse_modbus_uri,
     write_modbus_single_register,
@@ -102,10 +105,7 @@ class SMG2ExitFaultButton(ButtonEntity):
             _LOGGER.warning("Cannot parse Modbus URI %r: %s", self._device_uri, err)
             return
 
-        queue = self._hass.data.get("dess_monitor_local_queue")
-        if queue is None:
-            _LOGGER.warning("Command queue not available; skipping exit-fault")
-            return
+        queue = await get_command_queue(self._hass, self._device_uri)
 
         async def _do_write() -> dict:
             return await write_modbus_single_register(

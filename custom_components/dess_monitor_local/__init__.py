@@ -2,19 +2,26 @@ from __future__ import annotations
 
 import asyncio
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from custom_components.dess_monitor_local import frame_log
-from custom_components.dess_monitor_local.api.commands.direct_command_queue import CommandQueue
+from custom_components.dess_monitor_local.api.commands.direct_command_queue import (
+    stop_all_command_queues,
+)
 from custom_components.dess_monitor_local.api.protocols.eybond_dongle import (
     shutdown_all_eybond_managers,
 )
 from custom_components.dess_monitor_local.coordinators.direct_coordinator import DirectCoordinator
 
 from . import debug_panel, eybond_hub, hub
-from .const import CONF_ENTRY_KIND, ENTRY_KIND_DEVICE, ENTRY_KIND_EYBOND_HUB
+from .const import (
+    CONF_ENTRY_KIND,
+    DOMAIN,
+    ENTRY_KIND_DEVICE,
+    ENTRY_KIND_EYBOND_HUB,
+)
 
 # List of platforms to support. There should be a matching .py file for each,
 # eg <cover.py> and <sensor.py>
@@ -34,11 +41,10 @@ def _entry_kind(entry: ConfigEntry) -> str:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HubConfigEntry) -> bool:
-    # Store an instance of the "connecting" class that does the work of speaking
-    # with your actual devices.
-    queue = CommandQueue(min_delay=0.3)
-    await queue.start()
-    hass.data["dess_monitor_local_queue"] = queue
+    # Command queues are created lazily, one per physical endpoint, the first
+    # time a device is polled/written (see get_command_queue). No global queue
+    # is created here anymore — a single shared queue serialized every device
+    # against every other and broke when one of several entries unloaded.
 
     # Show/hide the admin-only live debug panel to match the hub option
     # (Configure -> Debug panel). Re-evaluated on every setup/reload.
@@ -73,13 +79,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # needs to unload itself, and remove callbacks. See the classes for further
     # details
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    # Drain the command queue's worker task on unload so HA doesn't log
-    # "Task was destroyed but it is pending!" when the worker is mid-await
-    # at shutdown. Pop only after unload_platforms so any platform-level
-    # teardown that still tries to enqueue completes against a live queue.
-    queue = hass.data.pop("dess_monitor_local_queue", None)
-    if queue is not None:
-        await queue.stop()
+    # Drain the endpoint queues' worker tasks so HA doesn't log "Task was
+    # destroyed but it is pending!" at shutdown. The queues are shared across
+    # all entries (keyed by physical endpoint), so only drain them once the
+    # LAST DESS entry unloads — otherwise a sibling entry loses its queue
+    # mid-flight. Done after unload_platforms so platform teardown that still
+    # enqueues completes against a live queue.
+    others_loaded = any(
+        e.entry_id != entry.entry_id and e.state is ConfigEntryState.LOADED
+        for e in hass.config_entries.async_entries(DOMAIN)
+    )
+    if not others_loaded:
+        await stop_all_command_queues(hass)
     # Drop the diagnostic frame buffer too — keeps memory clean across
     # reloads and avoids leaking stale frames from a previous device URI.
     frame_log.clear()

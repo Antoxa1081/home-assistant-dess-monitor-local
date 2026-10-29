@@ -1,6 +1,10 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+# hass.data key holding the per-endpoint queue registry (dict[str, CommandQueue]).
+QUEUES_KEY = "dess_monitor_local_queues"
 
 
 class CommandQueue:
@@ -52,3 +56,55 @@ class CommandQueue:
             finally:
                 await asyncio.sleep(self.min_delay)
                 self._queue.task_done()
+
+
+def endpoint_key(device: str) -> str:
+    """Stable key identifying the *physical endpoint* a command talks to.
+
+    Commands to the same endpoint must not interleave (half-duplex RS485 bus /
+    single socket); commands to different endpoints are independent and run on
+    separate queues so they poll in parallel. A single global queue used to
+    serialize every device against every other — this splits them apart.
+    """
+    if not device:
+        return "?"
+    # EyBond: one TCP listener fronts many dongles — serialize per dongle (PN),
+    # not per listener, so different dongles don't block each other.
+    if device.startswith("eybond"):
+        try:
+            pn = parse_qs(urlparse(device).query).get("pn", [""])[0]
+        except Exception:
+            pn = ""
+        return f"eybond:{pn}" if pn else device
+    # Network transports (tcp/modbus/pi18/agent): the socket is host:port.
+    try:
+        p = urlparse(device)
+        if p.hostname and p.port:
+            return f"{p.scheme}://{p.hostname}:{p.port}"
+    except Exception:
+        pass
+    # Serial / raw path: the device string itself is the endpoint.
+    return device
+
+
+async def get_command_queue(hass, device: str) -> "CommandQueue":
+    """Return the serialized queue for ``device``'s endpoint, creating it once.
+
+    Lazily started and cached in ``hass.data[QUEUES_KEY]`` so the first command
+    to a new endpoint spins up its worker and later ones reuse it.
+    """
+    registry: dict[str, CommandQueue] = hass.data.setdefault(QUEUES_KEY, {})
+    key = endpoint_key(device)
+    queue = registry.get(key)
+    if queue is None:
+        queue = CommandQueue(min_delay=0.3)
+        await queue.start()
+        registry[key] = queue
+    return queue
+
+
+async def stop_all_command_queues(hass) -> None:
+    """Drain and forget every endpoint queue (integration teardown)."""
+    registry: dict[str, CommandQueue] = hass.data.pop(QUEUES_KEY, {}) or {}
+    for queue in registry.values():
+        await queue.stop()
