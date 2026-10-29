@@ -41,3 +41,42 @@ class TestFrameLog:
         frame_log.record("QPIGS", b"a", crc_valid=True)
         frame_log.clear()
         assert frame_log.snapshot() == {}
+
+
+class TestOptionalFieldsAndFilter:
+    def setup_method(self):
+        frame_log.clear()
+
+    def teardown_method(self):
+        frame_log.clear()
+
+    def test_optional_fields_omitted_by_default(self):
+        frame_log.record("QPIGS", b"a", crc_valid=True)
+        entry = frame_log.snapshot()["QPIGS"][0]
+        assert set(entry) == {"timestamp", "byte_count", "crc_valid", "raw_hex", "raw_ascii"}
+
+    def test_outcome_and_tags_recorded(self):
+        frame_log.record(
+            "QPIGS", b"", False, outcome="timeout", transport="eybond", pn="PN1", devaddr=1,
+        )
+        entry = frame_log.snapshot()["QPIGS"][0]
+        assert entry["outcome"] == "timeout"
+        assert entry["byte_count"] == 0 and entry["raw_hex"] == ""
+        assert (entry["transport"], entry["pn"], entry["devaddr"]) == ("eybond", "PN1", 1)
+
+    def test_snapshot_for_eybond_filters_by_pn_and_devaddr(self):
+        frame_log.record("QPIGS", b"a", True, transport="eybond", pn="PN1", devaddr=1)
+        frame_log.record("QPIGS", b"b", True, transport="eybond", pn="PN2", devaddr=1)
+        frame_log.record("QPIGS", b"c", True, transport="eybond", pn="PN1", devaddr=2)
+        frame_log.record("QPIRI", b"d", True)  # untagged direct transport
+        snap = frame_log.snapshot_for("eybond", "PN1", 1)
+        assert list(snap) == ["QPIGS"]
+        assert [e["raw_ascii"] for e in snap["QPIGS"]] == ["a"]
+        # Legacy PN-less dongle: any PN on that devaddr.
+        legacy = frame_log.snapshot_for("eybond", None, 1)
+        assert [e["raw_ascii"] for e in legacy["QPIGS"]] == ["a", "b"]
+
+    def test_snapshot_for_untagged(self):
+        frame_log.record("QPIGS", b"a", True, transport="eybond", pn="PN1", devaddr=1)
+        frame_log.record("QPIRI", b"d", True)
+        assert list(frame_log.snapshot_for(None)) == ["QPIRI"]

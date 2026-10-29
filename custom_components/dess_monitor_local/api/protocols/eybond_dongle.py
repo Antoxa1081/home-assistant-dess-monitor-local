@@ -23,6 +23,13 @@ The wire format INSIDE FC=4 is byte-for-byte the same as ``tcp://`` and
 serial transports — the dispatcher feeds the unwrapped response straight
 into ``decode_direct_response``.
 
+Every FC=4 forward is recorded in ``frame_log`` (for "Download Diagnostics"):
+the unwrapped reply with its inner-protocol CRC verdict, or — when no reply
+arrived — an empty entry whose ``outcome`` says why (``no_session``,
+``timeout``, ``write_failed``, ``session_lost``, ``bind_failed``). Entries are
+tagged ``transport="eybond"`` plus ``pn``/``devaddr`` so per-device
+diagnostics can filter one dongle out of a shared listener.
+
 A single TCP listener serves all ``eybond://`` devices in this HA
 instance; ``devaddr`` in the URI selects which inverter on the RS485 bus
 (1-based). Multiple dongles can share one listener — requests route by
@@ -47,7 +54,13 @@ from urllib.parse import parse_qs, urlparse
 from ...const import PROTOCOL_PI18
 from ...diag_hub import active as _diag
 from ...diag_hub import publish as _diag_pub
-from ..crc import build_pi30_frame
+from ...frame_log import record as _record_frame
+from ..crc import (
+    build_pi30_frame,
+    crc16_modbus,
+    validate_pi18_response,
+    validate_voltronic_response,
+)
 from ..decoders.pi18 import build_request_frame
 from .eybond_discovery import EybondRegistry
 
@@ -169,6 +182,31 @@ def _build_forward2device(
 # ---------------------------------------------------------------------------
 # URI parsing
 # ---------------------------------------------------------------------------
+def _frame_log_key(context: str, v_frame: bytes) -> str:
+    """``frame_log`` buffer name for a forward — matches the other transports
+    (bare command for PI30, ``PI18:<cmd>`` for PI18; Modbus uses its context)."""
+    name = context or v_frame.hex()
+    if v_frame.startswith(b"^P") and not name.startswith("PI18:"):
+        return f"PI18:{name}"
+    return name
+
+
+def _reply_crc_ok(v_frame: bytes, raw: bytes) -> bool:
+    """Validate the inner-protocol CRC of an FC=4 reply.
+
+    The protocol is inferred from the request: PI18 requests start with
+    ``^P``, PI30 requests are ASCII commands, anything else is Modbus RTU
+    (first byte = binary unit id; CRC-16/Modbus little-endian trailer).
+    """
+    if v_frame.startswith(b"^P"):
+        return validate_pi18_response(raw.split(b"\r", 1)[0])[0]
+    if v_frame[:1].isalpha():
+        return validate_voltronic_response(raw.split(b"\r", 1)[0])[0]
+    if len(raw) < 4:
+        return False
+    return crc16_modbus(raw[:-2]) == (raw[-2] | (raw[-1] << 8))
+
+
 def parse_eybond_uri(device: str) -> tuple[str, int, int, str, str | None]:
     """Return ``(bind_host, bind_port, devaddr, broadcast, announce_ip)``.
 
@@ -836,9 +874,17 @@ class EybondManager:
         legacy single-dongle behaviour (route to the only/first session).
         """
         await self.ensure_started()
+        log_key = _frame_log_key(context, v_frame)
+
+        def _log(outcome: str | None, raw: bytes = b"", target_pn: str | None = pn) -> None:
+            _record_frame(
+                log_key, raw, bool(raw) and _reply_crc_ok(v_frame, raw),
+                outcome=outcome, transport="eybond", pn=target_pn, devaddr=devaddr,
+            )
 
         sess = await self._wait_for_session(pn, timeout, context, devaddr)
         if sess is None:
+            _log("no_session")
             return None
 
         async with sess.send_lock:
@@ -868,6 +914,7 @@ class EybondManager:
                     "EyBond: write %s devaddr=%d to %s failed: %s",
                     context or "frame", devaddr, sess.peer, err,
                 )
+                _log("write_failed", target_pn=sess.pn or pn)
                 return None
             # Cap the reply wait — a connected dongle answers in well under a
             # second, so a longer wait only stalls the cycle on a half-attentive
@@ -883,14 +930,17 @@ class EybondManager:
                     "EyBond: %s devaddr=%d tid=%d TIMEOUT after %.1fs",
                     context or "frame", devaddr, tid, resp_timeout,
                 )
+                _log("timeout", target_pn=sess.pn or pn)
                 return None
             except ConnectionError as err:
                 _LOGGER.debug(
                     "EyBond: %s devaddr=%d aborted (session lost): %s",
                     context or "frame", devaddr, err,
                 )
+                _log("session_lost", target_pn=sess.pn or pn)
                 return None
 
+        _log(None if raw else "empty_reply", raw, target_pn=sess.pn or pn)
         _LOGGER.debug(
             "EyBond RX-payload %s devaddr=%d (%d bytes raw)",
             context or "frame", devaddr, len(raw),
@@ -1013,6 +1063,10 @@ async def send_eybond_bytes(
                 "EyBond: TCP bind FAILED on %s:%d (%s). Suppressing further bind attempts for %ds.",
                 bind_host, bind_port, err, int(BIND_FAILURE_BACKOFF),
             )
+        _record_frame(
+            _frame_log_key(context, v_frame), b"", False,
+            outcome="bind_failed", transport="eybond", pn=pn, devaddr=devaddr,
+        )
         return None
     return await mgr.send_frame(devaddr, v_frame, timeout, context=context, pn=pn)
 

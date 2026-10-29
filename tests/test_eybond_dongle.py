@@ -10,6 +10,13 @@ import asyncio
 import struct
 from unittest.mock import patch
 
+from custom_components.dess_monitor_local import frame_log
+from custom_components.dess_monitor_local.api.crc import (
+    build_pi30_frame,
+    crc16_modbus,
+    crc16_voltronic,
+    crc16_xmodem_bytes,
+)
 from custom_components.dess_monitor_local.api.protocols import eybond_dongle as ey
 
 
@@ -589,3 +596,118 @@ class TestDiscoveryIntegration:
             await _drain(mgr, t1, t2)
 
         asyncio.run(scenario())
+
+
+class TestFrameLogRecording:
+    """FC=4 forwards land in ``frame_log`` — replies with their inner CRC
+    verdict, failures as empty entries with an ``outcome`` marker."""
+
+    def setup_method(self):
+        frame_log.clear()
+
+    def teardown_method(self):
+        frame_log.clear()
+
+    def test_reply_crc_ok_per_protocol(self):
+        pi30_payload = b"230.0 50.0"
+        pi30_reply = b"(" + pi30_payload + crc16_voltronic(pi30_payload) + b"\r"
+        assert ey._reply_crc_ok(build_pi30_frame("QPIGS"), pi30_reply) is True
+        assert ey._reply_crc_ok(build_pi30_frame("QPIGS"), b"(230.0 50.0XX\r") is False
+
+        pi18_head = b"^D0101,2,3"
+        pi18_reply = pi18_head + crc16_xmodem_bytes(pi18_head) + b"\r"
+        assert ey._reply_crc_ok(b"^P005GS\x00\x00\r", pi18_reply) is True
+
+        mb_body = bytes([0x01, 0x03, 0x02, 0x00, 0x2A])
+        crc = crc16_modbus(mb_body)
+        mb_reply = mb_body + bytes([crc & 0xFF, crc >> 8])
+        mb_req = bytes([0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x84, 0x0A])
+        assert ey._reply_crc_ok(mb_req, mb_reply) is True
+        assert ey._reply_crc_ok(mb_req, mb_reply[:-1] + b"\x00") is False
+
+    def test_frame_log_key(self):
+        assert ey._frame_log_key("QPIGS", b"QPIGS..\r") == "QPIGS"
+        assert ey._frame_log_key("QPIGS", b"^P005GS..\r") == "PI18:QPIGS"
+        assert ey._frame_log_key("modbus rd 0+1", b"\x01\x03") == "modbus rd 0+1"
+
+    def test_successful_reply_recorded_with_tags(self):
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.identified_pns == ["PN0000000001"])
+            send = asyncio.create_task(mgr.send_frame(
+                1, build_pi30_frame("QPIGS"), timeout=5.0,
+                context="QPIGS", pn="PN0000000001",
+            ))
+            await _until(lambda: _find_fc4(w.frames)[1] is not None)
+            h, _ = _find_fc4(w.frames)
+            payload = b"230.0 50.0"
+            reply = b"(" + payload + crc16_voltronic(payload) + b"\r"
+            r.feed(ey._build_forward2device(h.tid, reply, devaddr=1))
+            assert await send == reply
+            await _drain(mgr, task, send)
+
+        asyncio.run(scenario())
+        entry = frame_log.snapshot()["QPIGS"][0]
+        assert entry["crc_valid"] is True
+        assert entry["byte_count"] == 14
+        assert entry["raw_ascii"].startswith("(230.0 50.0")
+        assert entry["transport"] == "eybond"
+        assert entry["pn"] == "PN0000000001"
+        assert entry["devaddr"] == 1
+        assert "outcome" not in entry
+
+    def test_timeout_recorded(self):
+        async def scenario():
+            mgr = _new_manager()
+            r, w = _FakeReader(), _FakeWriter(("10.0.0.1", 1111))
+            task = asyncio.create_task(mgr._handle_session(r, w))
+            r.feed(_dongle_heartbeat("PN0000000001"))
+            await _until(lambda: mgr.identified_pns == ["PN0000000001"])
+            with patch.object(ey, "FORWARD_RESPONSE_TIMEOUT", 0.05):
+                await mgr.send_frame(
+                    2, build_pi30_frame("QPIRI"), timeout=30.0,
+                    context="QPIRI", pn="PN0000000001",
+                )
+            await _drain(mgr, task)
+
+        asyncio.run(scenario())
+        entry = frame_log.snapshot()["QPIRI"][0]
+        assert entry["outcome"] == "timeout"
+        assert entry["byte_count"] == 0
+        assert entry["crc_valid"] is False
+        assert entry["pn"] == "PN0000000001"
+        assert entry["devaddr"] == 2
+
+    def test_no_session_recorded(self):
+        async def scenario():
+            mgr = _new_manager()
+            await mgr.send_frame(
+                1, build_pi30_frame("QMOD"), timeout=0.05,
+                context="QMOD", pn="PN_MISSING01",
+            )
+            await _drain(mgr)
+
+        asyncio.run(scenario())
+        entry = frame_log.snapshot()["QMOD"][0]
+        assert entry["outcome"] == "no_session"
+        assert entry["pn"] == "PN_MISSING01"
+
+    def test_write_failure_recorded(self):
+        async def scenario():
+            mgr = _new_manager()
+            r = _FakeReader()
+            w = _FakeWriter(("10.0.0.1", 1111), fail_drain=True)
+            sess = ey._Session(reader=r, writer=w, peer="10.0.0.1:1111")
+            sess.pn = "PN0000000001"
+            mgr._sessions_by_pn["PN0000000001"] = sess
+            await mgr.send_frame(
+                1, build_pi30_frame("QPIWS"), timeout=1.0,
+                context="QPIWS", pn="PN0000000001",
+            )
+            await _drain(mgr)
+
+        asyncio.run(scenario())
+        assert frame_log.snapshot()["QPIWS"][0]["outcome"] == "write_failed"

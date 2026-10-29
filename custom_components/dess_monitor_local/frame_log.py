@@ -16,6 +16,16 @@ Implementation choices:
   well under any reasonable memory budget.
 * Both hex and printable-ASCII representations are recorded — hex for
   byte-exact reproduction, ASCII for at-a-glance human reading.
+* Optional fields are added only when the caller supplies them, so the
+  base entry shape stays stable for existing callers:
+
+  - ``outcome`` — why a request produced no usable reply (``"timeout"``,
+    ``"no_session"``, …). Such entries carry empty bytes; their absence
+    means a reply was received.
+  - ``transport`` / ``pn`` / ``devaddr`` — routing tags (the EyBond path
+    sets them) so device diagnostics can pick out one dongle's frames
+    from a listener shared by several. Never a host or URI: frames are
+    not redacted.
 """
 from __future__ import annotations
 
@@ -35,24 +45,76 @@ def _safe_ascii(b: bytes) -> str:
     )
 
 
-def record(command: str, raw_bytes: bytes, crc_valid: bool) -> None:
-    """Append one frame snapshot to the per-command ring buffer."""
+def record(
+    command: str,
+    raw_bytes: bytes,
+    crc_valid: bool,
+    *,
+    outcome: str | None = None,
+    transport: str | None = None,
+    pn: str | None = None,
+    devaddr: int | None = None,
+) -> None:
+    """Append one frame snapshot to the per-command ring buffer.
+
+    The keyword-only fields are optional (see module docstring) and are
+    omitted from the entry when ``None``.
+    """
     buf = _FRAMES.get(command)
     if buf is None:
         buf = deque(maxlen=_MAX_FRAMES_PER_COMMAND)
         _FRAMES[command] = buf
-    buf.append({
+    entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "byte_count": len(raw_bytes),
         "crc_valid": crc_valid,
         "raw_hex": raw_bytes.hex(" "),
         "raw_ascii": _safe_ascii(raw_bytes),
-    })
+    }
+    for key, value in (
+        ("outcome", outcome),
+        ("transport", transport),
+        ("pn", pn),
+        ("devaddr", devaddr),
+    ):
+        if value is not None:
+            entry[key] = value
+    buf.append(entry)
 
 
 def snapshot() -> dict[str, list[dict]]:
     """Return a JSON-serialisable snapshot of all buffers for diagnostics."""
     return {cmd: list(buf) for cmd, buf in _FRAMES.items()}
+
+
+def snapshot_for(
+    transport: str | None,
+    pn: str | None = None,
+    devaddr: int | None = None,
+) -> dict[str, list[dict]]:
+    """Snapshot narrowed to one device's frames (device-level diagnostics).
+
+    ``transport=None`` selects untagged entries (the direct TCP / serial
+    transports, which talk to exactly one device each). For a tagged
+    transport (``"eybond"``) entries must match ``devaddr`` and — when
+    ``pn`` is given — ``pn``; ``pn=None`` is the legacy PN-less dongle,
+    which matches any PN. Commands with no matching entry are omitted.
+    """
+    out: dict[str, list[dict]] = {}
+    for cmd, buf in _FRAMES.items():
+        if transport is None:
+            hits = [e for e in buf if "transport" not in e]
+        else:
+            hits = [
+                e
+                for e in buf
+                if e.get("transport") == transport
+                and (devaddr is None or e.get("devaddr") == devaddr)
+                and (pn is None or e.get("pn") == pn)
+            ]
+        if hits:
+            out[cmd] = hits
+    return out
 
 
 def clear() -> None:
