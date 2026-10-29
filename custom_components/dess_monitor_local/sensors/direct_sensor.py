@@ -33,6 +33,7 @@ from custom_components.dess_monitor_local.api.decoders.enums import (
     PI18DCACPowerDirection,
     PI18LinePowerDirection,
     PI18MPPTStatus,
+    parallel_mode_name,
 )
 from custom_components.dess_monitor_local.const import DOMAIN
 from custom_components.dess_monitor_local.hub import InverterDevice
@@ -236,6 +237,16 @@ class ChargerSourcePrioritySensor(DirectEnumSensorBase):
 
 class ParallelModeSensor(DirectEnumSensorBase):
     enum_class = ParallelMode
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        # The PI30 decoder already emits names; transports that pass QPIRI
+        # through verbatim (agent) may still carry the raw output-mode code.
+        section = self.data.get(self.data_section, {})
+        raw_value = section.get(self.data_key)
+        name = parallel_mode_name(raw_value) if raw_value is not None else None
+        self._attr_native_value = name if name in self.options else None
+        self.async_write_ha_state()
 
 
 class DirectPVPowerSensor(DirectWattSensorBase):

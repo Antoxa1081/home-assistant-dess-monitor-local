@@ -300,7 +300,7 @@ class DirectCoordinator(DataUpdateCoordinator):
                     #         "parallel_max_number": "6",
                     #         "reserved_uu": "01",
                     #         "reserved_v": "0",
-                    #         "parallel_mode": "Master",
+                    #         "parallel_mode": "Single",
                     #         "high_battery_voltage_to_battery_mode": "26.0",
                     #         "solar_work_condition_in_parallel": "0",
                     #         "solar_max_charging_power_auto_adjust": "1_"

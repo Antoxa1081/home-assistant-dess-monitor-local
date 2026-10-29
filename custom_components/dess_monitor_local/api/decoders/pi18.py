@@ -302,8 +302,8 @@ def _decode_piri(tokens: list[str]) -> dict[str, Any]:
         "parallel_max_number": raw["parallel_max"] or "0",
         "reserved_uu": "00",
         "reserved_v": "0",
-        # PI18 has no PIRI parallel master/slave readout. Default to standalone.
-        "parallel_mode": "Standalone",
+        # PI18 has no PIRI output-mode readout. Default to a single unit.
+        "parallel_mode": "Single",
         "high_battery_voltage_to_battery_mode": f"{_safe_int(raw['battery_recharge_voltage']) / 10.0:.1f}",
         "solar_work_condition_in_parallel": "0",
         "solar_max_charging_power_auto_adjust": "1_",

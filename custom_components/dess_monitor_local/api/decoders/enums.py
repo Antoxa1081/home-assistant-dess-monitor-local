@@ -48,11 +48,34 @@ class ChargerSourcePriority(Enum):
 
 
 class ParallelMode(Enum):
-    Master = "0"
-    Slave = "1"
-    Standalone = "2"
-    PARALLEL_1_PHASE = "3"
-    PARALLEL_3_PHASE = "4"
+    """PI30 QPIRI output mode (field 21): how this unit sits in a parallel set.
+
+    Codes 5-7 (split-phase) only appear on newer PI30 revisions. Firmware may
+    send the code zero-padded ("00"); see ``parallel_mode_name``.
+    """
+
+    Single = "0"
+    Parallel = "1"
+    Phase1Of3 = "2"
+    Phase2Of3 = "3"
+    Phase3Of3 = "4"
+    Phase1Of2 = "5"
+    Phase2Of2At120 = "6"
+    Phase2Of2At180 = "7"
+
+
+def parallel_mode_name(value: str) -> str:
+    """Map a raw output-mode code ("0", "04", ...) to its ``ParallelMode`` name.
+
+    Already-decoded names pass through; unknown values are returned verbatim
+    (the enum sensor then reports them as unknown instead of crashing).
+    """
+    if value in ParallelMode.__members__:
+        return value
+    try:
+        return ParallelMode(str(int(value))).name
+    except ValueError:
+        return value
 
 
 class OperatingMode(Enum):

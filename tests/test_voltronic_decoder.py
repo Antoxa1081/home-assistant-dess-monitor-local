@@ -134,8 +134,16 @@ class TestDecodeQpiri:
 
 class TestTransformQpiriValue:
     def test_parallel_mode_index_21(self):
-        # ParallelMode "0" -> Master.
-        assert voltronic.transform_qpiri_value(21, "0") == "Master"
+        # QPIRI field 21 is the PI30 output mode: "0" = single machine.
+        assert voltronic.transform_qpiri_value(21, "0") == "Single"
+        assert voltronic.transform_qpiri_value(21, "1") == "Parallel"
+        assert voltronic.transform_qpiri_value(21, "2") == "Phase1Of3"
+        assert voltronic.transform_qpiri_value(21, "4") == "Phase3Of3"
+
+    def test_parallel_mode_zero_padded_and_unknown(self):
+        assert voltronic.transform_qpiri_value(21, "03") == "Phase2Of3"
+        assert voltronic.transform_qpiri_value(21, "9") == "9"
+        assert voltronic.transform_qpiri_value(21, "x") == "x"
 
     def test_non_enum_index_passthrough(self):
         assert voltronic.transform_qpiri_value(0, "230.0") == "230.0"

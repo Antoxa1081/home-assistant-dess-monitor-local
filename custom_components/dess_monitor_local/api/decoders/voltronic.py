@@ -16,7 +16,7 @@ from .enums import (
     ChargerSourcePriority,
     OperatingMode,
     OutputSourcePriority,
-    ParallelMode,
+    parallel_mode_name,
 )
 
 
@@ -202,7 +202,7 @@ def transform_qpiri_value(index: int, value: str) -> str:
             case 17:
                 return ChargerSourcePriority(value).name
             case 21:
-                return ParallelMode(value).name
+                return parallel_mode_name(value)
             case _:
                 return value
     except ValueError:
